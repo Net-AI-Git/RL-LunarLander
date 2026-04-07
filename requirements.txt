@@ -1,0 +1,9 @@
+stable-baselines3
+gymnasium[box2d]
+huggingface_sb3
+huggingface_hub
+pyvirtualdisplay
+optuna
+ipywidgets
+opencv-python-headless
+matplotlib
