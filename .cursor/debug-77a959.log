@@ -1,0 +1,2 @@
+{"sessionId": "77a959", "hypothesisId": "H3", "location": "notebook:imports_cell", "message": "imports_executed", "data": {"has_os": true, "has_torch": "<class 'module'>"}, "timestamp": 1775560287109}
+{"sessionId": "77a959", "hypothesisId": "H1", "location": "notebook:hyperparams_cell", "message": "hyperparams_completed", "data": {"vecnormalize_path": "./checkpoints/vecnormalize.pkl"}, "timestamp": 1775560287433}
