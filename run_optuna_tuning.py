@@ -15,6 +15,8 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from lunar_rl_common import (
     get_device,
     make_eval_vec_env_with_stats,
+    make_ppo_clip_range_schedule,
+    make_ppo_lr_schedule,
     make_train_vec_env,
     policy_kwargs,
 )
@@ -36,13 +38,14 @@ def main() -> None:
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial: optuna.Trial) -> float:
-        learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-        n_steps = trial.suggest_categorical("n_steps", [512, 1024, 2048])
-        batch_size = trial.suggest_categorical("batch_size", [64, 128, 256, 512])
-        n_epochs = trial.suggest_int("n_epochs", 3, 10)
+        lr_start = trial.suggest_float("learning_rate", 3e-5, 3e-4, log=True)
+        n_steps = trial.suggest_categorical("n_steps", [512, 1024])
+        batch_size = trial.suggest_categorical("batch_size", [128, 256])
+        n_epochs = trial.suggest_int("n_epochs", 3, 6)
         trial_gamma = trial.suggest_float("gamma", 0.98, 0.999)
         gae_lambda = trial.suggest_float("gae_lambda", 0.9, 0.99)
-        ent_coef = trial.suggest_float("ent_coef", 1e-4, 0.1, log=True)
+        ent_coef = trial.suggest_float("ent_coef", 1e-3, 0.03, log=True)
+        target_kl = trial.suggest_float("target_kl", 0.005, 0.03, log=True)
 
         if batch_size > n_steps * args.n_envs:
             raise optuna.TrialPruned()
@@ -58,7 +61,9 @@ def main() -> None:
             device=device,
             verbose=0,
             policy_kwargs=policy_kwargs,
-            learning_rate=learning_rate,
+            learning_rate=make_ppo_lr_schedule(lr_start, lr_end_factor=0.05, lr_floor=1e-5),
+            clip_range=make_ppo_clip_range_schedule(),
+            target_kl=target_kl,
             n_steps=n_steps,
             batch_size=batch_size,
             n_epochs=n_epochs,

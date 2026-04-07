@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import csv
 import os
+import warnings
 
 import cv2
 import gymnasium as gym
@@ -15,7 +18,9 @@ from gymnasium.wrappers.transform_observation import AddRenderObservation
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from stable_baselines3.common.utils import FloatSchedule, LinearSchedule
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import unwrap_vec_normalize
 
 DEFAULT_ENV_ID = "LunarLander-v3"
 
@@ -119,6 +124,181 @@ def make_eval_vec_env_with_stats(stats_path, seed, env_id: str | None = None):
     venv.seed(seed)
     venv.reset()
     return venv
+
+
+def sync_vecnormalize_obs_rms(src: VecNormalize, dst: VecNormalize) -> None:
+    """Copy running observation normalization stats from training VecNormalize to eval copy."""
+    if not src.norm_obs or not dst.norm_obs:
+        return
+    dst.obs_rms = copy.deepcopy(src.obs_rms)
+
+
+def make_eval_vec_env_synced(
+    train_venv: VecNormalize, seed: int, env_id: str | None = None
+) -> VecNormalize:
+    """
+    Single-env eval VecNormalize with the same norm settings as training, no reward norm,
+    training=False (no stat updates). obs_rms matches train_venv at call time.
+    """
+    def factory():
+        return make_lunar_dict_env(env_id)
+
+    venv = DummyVecEnv([factory])
+    ev = VecNormalize(
+        venv,
+        norm_obs=train_venv.norm_obs,
+        norm_reward=False,
+        clip_obs=train_venv.clip_obs,
+        clip_reward=train_venv.clip_reward,
+        gamma=train_venv.gamma,
+        epsilon=train_venv.epsilon,
+        norm_obs_keys=(
+            list(train_venv.norm_obs_keys)
+            if train_venv.norm_obs_keys is not None
+            else None
+        ),
+    )
+    ev.training = False
+    sync_vecnormalize_obs_rms(train_venv, ev)
+    ev.seed(seed)
+    ev.reset()
+    return ev
+
+
+def make_ppo_lr_schedule(
+    lr_start: float, lr_end_factor: float = 0.05, lr_floor: float = 1e-5
+) -> FloatSchedule:
+    """Linear LR decay: high at start, low at end. lr_end = max(lr_floor, lr_start * lr_end_factor)."""
+    lr_end = max(lr_floor, float(lr_start) * lr_end_factor)
+    return FloatSchedule(LinearSchedule(float(lr_start), lr_end, end_fraction=1.0))
+
+
+def make_ppo_clip_range_schedule(
+    clip_start: float = 0.2, clip_end: float = 0.05
+) -> FloatSchedule:
+    return FloatSchedule(
+        LinearSchedule(float(clip_start), float(clip_end), end_fraction=1.0)
+    )
+
+
+def get_train_vec_normalize(env) -> VecNormalize | None:
+    if isinstance(env, VecNormalize):
+        return env
+    return unwrap_vec_normalize(env)
+
+
+class PeriodicEvalCallback(BaseCallback):
+    """
+    Run eval for a fixed step budget on a synced eval env (eval-only VecNormalize, no reward norm).
+    Appends rows to CSV and stores records in eval_history for plotting.
+    """
+
+    def __init__(
+        self,
+        eval_freq: int,
+        n_eval_steps: int,
+        seed: int,
+        csv_path: str = "logs/periodic_eval.csv",
+        env_id: str | None = None,
+        deterministic: bool = True,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.eval_freq = eval_freq
+        self.n_eval_steps = n_eval_steps
+        self.seed = seed
+        self.csv_path = csv_path
+        self.env_id = env_id
+        self.deterministic = deterministic
+        self._last_eval_at = 0
+        self.eval_history: list[dict] = []
+
+    def _write_row(
+        self,
+        timesteps: int,
+        mean_reward: float,
+        std_reward: float,
+        n_episodes: int,
+    ) -> None:
+        d = os.path.dirname(self.csv_path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        write_header = not os.path.isfile(self.csv_path)
+        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(
+                    [
+                        "timesteps",
+                        "mean_reward",
+                        "std_reward",
+                        "n_episodes",
+                        "n_eval_steps",
+                    ]
+                )
+            w.writerow(
+                [
+                    timesteps,
+                    mean_reward,
+                    std_reward,
+                    n_episodes,
+                    self.n_eval_steps,
+                ]
+            )
+        self.eval_history.append(
+            {
+                "timesteps": timesteps,
+                "mean_reward": mean_reward,
+                "std_reward": std_reward,
+                "n_episodes": n_episodes,
+            }
+        )
+
+    def _run_eval(self) -> None:
+        train_vn = get_train_vec_normalize(self.training_env)
+        if train_vn is None:
+            warnings.warn("PeriodicEvalCallback: training env is not VecNormalize; skip.")
+            return
+
+        eval_env = make_eval_vec_env_synced(train_vn, self.seed, self.env_id)
+        try:
+            obs = eval_env.reset()
+            ep_returns: list[float] = []
+            ep_return = 0.0
+            steps = 0
+            while steps < self.n_eval_steps:
+                action, _ = self.model.predict(obs, deterministic=self.deterministic)
+                obs, rewards, dones, _ = eval_env.step(action)
+                ep_return += float(rewards[0])
+                steps += 1
+                if dones[0]:
+                    ep_returns.append(ep_return)
+                    ep_return = 0.0
+            if ep_return != 0.0 and not dones[0]:
+                # unfinished episode at horizon — optional: could append; plan focuses on completed
+                pass
+
+            n_ep = len(ep_returns)
+            if n_ep >= 1:
+                mean_r = float(np.mean(ep_returns))
+                std_r = float(np.std(ep_returns)) if n_ep > 1 else 0.0
+            else:
+                mean_r = float("nan")
+                std_r = float("nan")
+                warnings.warn(
+                    "PeriodicEvalCallback: no completed episode in eval window; "
+                    "increase n_eval_steps or check env."
+                )
+
+            self._write_row(self.num_timesteps, mean_r, std_r, n_ep)
+        finally:
+            eval_env.close()
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps - self._last_eval_at >= self.eval_freq:
+            self._last_eval_at = self.num_timesteps
+            self._run_eval()
+        return True
 
 
 class CustomCombinedExtractor(BaseFeaturesExtractor):
