@@ -13,7 +13,6 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from lunar_rl_common import (
     PeriodicEvalCallback,
     VecNormalizeSaveCallback,
-    get_device,
     make_eval_vec_env_with_stats,
     make_ppo_clip_range_schedule,
     make_ppo_lr_schedule,
@@ -23,7 +22,8 @@ from lunar_rl_common import (
 
 
 def main() -> int:
-    device = get_device()
+    # MlpPolicy short smoke: CPU avoids SB3 GPU warning for non-CNN policies.
+    device = "cpu"
     seed = 42
     env_id = "LunarLander-v3"
     n_envs = 2
@@ -34,7 +34,7 @@ def main() -> int:
     try:
         train_env = make_train_vec_env(n_envs, seed, gamma, env_id=env_id)
         model = PPO(
-            "MultiInputPolicy",
+            "MlpPolicy",
             train_env,
             seed=seed,
             device=device,

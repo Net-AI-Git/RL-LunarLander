@@ -2,7 +2,7 @@
 # One-shot dev environment: matches the course-style cells below, plus this repo's extras.
 #
 # Original notebook-style (equivalent — no need to run pip/pyvirtualdisplay twice):
-#   !pip install stable-baselines3 "gymnasium[box2d]" huggingface_sb3 pyvirtualdisplay optuna ipywidgets opencv-python-headless
+#   !pip install stable-baselines3 "gymnasium[box2d]" huggingface_sb3 pyvirtualdisplay optuna ipywidgets
 #   !sudo apt-get update
 #   !sudo apt-get install -y python3-opengl
 #   !apt install -y ffmpeg
@@ -52,8 +52,7 @@ echo "==> Pip: course baseline (your first !pip install line, exact set)"
   huggingface_sb3 \
   pyvirtualdisplay \
   optuna \
-  ipywidgets \
-  opencv-python-headless
+  ipywidgets
 
 echo "==> Pip: this repo + notebooks (Hub upload, plots, Jupyter kernel — not in the short course line)"
 "${PIP}" install \

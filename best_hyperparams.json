@@ -1,15 +1,4 @@
 {
-  "params": {
-    "learning_rate": 0.0007166134104933579,
-    "n_steps": 512,
-    "batch_size": 256,
-    "n_epochs": 4,
-    "gamma": 0.9965386306142385,
-    "gae_lambda": 0.9077203714673885,
-    "ent_coef": 0.09350619667563659
-  },
-  "score": 115.1799039320096,
-  "mean_reward": 200.7020383,
-  "std_reward": 85.5221343679904,
-  "trial_number": 9
+  "params": {},
+  "note": "Hyperparameters were reset for the vector-observation + MlpPolicy pipeline. Previous scores from MultiInput/dict-obs runs are not comparable. Run run_optuna_tuning.py to fill params and obtain new metrics."
 }

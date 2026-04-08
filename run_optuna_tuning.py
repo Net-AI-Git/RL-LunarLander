@@ -24,7 +24,7 @@ from lunar_rl_common import (
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="PPO + MultiInput Optuna tuning for Lunar Lander")
+    p = argparse.ArgumentParser(description="PPO + MlpPolicy (vector obs) Optuna tuning for Lunar Lander")
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--timesteps-per-trial", type=int, default=200_000)
     p.add_argument("--n-eval-episodes", type=int, default=10)
@@ -70,7 +70,7 @@ def main() -> None:
         )
 
         model = PPO(
-            "MultiInputPolicy",
+            "MlpPolicy",
             trial_env,
             seed=args.seed,
             device=device,
