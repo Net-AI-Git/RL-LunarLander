@@ -6,6 +6,7 @@ import copy
 import csv
 import os
 import warnings
+from collections.abc import Callable
 
 import cv2
 import gymnasium as gym
@@ -322,28 +323,42 @@ class PeriodicEvalCallback(BaseCallback):
 
 class LiveRewardPlotCallback(BaseCallback):
     """
-    Rolling training score (mean - std) only, one purple line. Periodic eval stays in CSV only.
+    Live training plot (as in pre-refactor notebook / commit 127440b): rolling mean, score
+    (mean − std), rolling std on a twin axis, optional periodic eval mean ± band, optional
+    horizontal \"solved\" reference. Saves PNG; optional ``display_fn`` (e.g. notebook’s
+    ``display_mpl_figure_as_png``) can refresh Jupyter output with ``display_id``.
     """
+
+    DISPLAY_ID_DEFAULT = "rl_lunarlander_live_reward"
 
     def __init__(
         self,
         window: int = 50,
         plot_freq: int = 5000,
+        periodic_eval_cb: PeriodicEvalCallback | None = None,
         eval_color: str = "#7B1FA2",
+        solved_reference_y: float | None = 350.0,
         save_path: str | None = None,
+        display_fn: Callable[..., None] | None = None,
+        display_id: str | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
-        self.window = window
-        self.plot_freq = plot_freq
+        self.window = int(window)
+        self.plot_freq = int(plot_freq)
+        self.periodic_eval_cb = periodic_eval_cb
         self.eval_color = eval_color
+        self.solved_reference_y = solved_reference_y
         self.save_path = save_path
+        self.display_fn = display_fn
+        self.display_id = display_id or self.DISPLAY_ID_DEFAULT
         self.episode_rewards: list[float] = []
         self.episode_timesteps: list[int] = []
         self._last_plot_at = 0
+        self._plot_shown = False
 
     def _on_training_start(self) -> None:
-        self._last_plot_at = self.num_timesteps
+        self._last_plot_at = int(self.num_timesteps)
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
@@ -355,7 +370,7 @@ class LiveRewardPlotCallback(BaseCallback):
 
         if len(self.episode_rewards) >= self.window:
             if self.num_timesteps - self._last_plot_at >= self.plot_freq:
-                self._last_plot_at = self.num_timesteps
+                self._last_plot_at = int(self.num_timesteps)
                 self._update_plot()
         return True
 
@@ -366,7 +381,7 @@ class LiveRewardPlotCallback(BaseCallback):
         mean = np.convolve(rews, np.ones(self.window) / self.window, mode="valid")
         std = np.array(
             [
-                rews[max(0, i - self.window) : i].std()
+                float(rews[max(0, i - self.window) : i].std())
                 for i in range(self.window, len(rews) + 1)
             ]
         )
@@ -374,25 +389,96 @@ class LiveRewardPlotCallback(BaseCallback):
         ts_valid = ts[self.window - 1 :]
 
         fig, ax1 = plt.subplots(figsize=(12, 5))
+
+        ax1.plot(
+            ts_valid, mean, color="#2196F3", linewidth=2, label="Mean reward"
+        )
         ax1.plot(
             ts_valid,
             score,
-            color=self.eval_color,
+            color="#FF9800",
             linewidth=2,
-            label="Score (mean - std)",
+            label="Score (mean − std)",
         )
+
+        pecb = self.periodic_eval_cb
+        hist = getattr(pecb, "eval_history", None) if pecb is not None else None
+        if hist:
+            ex: list[int] = []
+            em: list[float] = []
+            es: list[float] = []
+            for h in hist:
+                m = float(h["mean_reward"])
+                if np.isfinite(m):
+                    ex.append(int(h["timesteps"]))
+                    em.append(m)
+                    s = float(h["std_reward"])
+                    es.append(s if np.isfinite(s) else 0.0)
+            if ex:
+                ax1.plot(
+                    ex,
+                    em,
+                    color=self.eval_color,
+                    linewidth=2,
+                    marker="o",
+                    markersize=4,
+                    label="Periodic eval (mean)",
+                )
+                ax1.fill_between(
+                    ex,
+                    np.array(em) - np.array(es),
+                    np.array(em) + np.array(es),
+                    color=self.eval_color,
+                    alpha=0.15,
+                    label="Periodic eval ± std",
+                )
+
+        if self.solved_reference_y is not None:
+            ax1.axhline(
+                float(self.solved_reference_y),
+                color="green",
+                linestyle="--",
+                alpha=0.7,
+                label=f"Solved ({self.solved_reference_y:g})",
+            )
+
         ax1.set_xlabel("Timesteps")
-        ax1.set_ylabel("Score (mean - std)")
+        ax1.set_ylabel("Reward")
         ax1.grid(True, alpha=0.3)
-        ax1.legend(loc="lower right")
+
+        ax2 = ax1.twinx()
+        ax2.plot(
+            ts_valid,
+            std,
+            color="#E53935",
+            linewidth=1.5,
+            alpha=0.7,
+            linestyle=":",
+            label="Std",
+        )
+        ax2.set_ylabel("Std", color="#E53935")
+        ax2.tick_params(axis="y", labelcolor="#E53935")
+
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="lower right")
+
+        latest_mean = float(mean[-1])
+        latest_std = float(std[-1])
         latest_score = float(score[-1])
         ax1.set_title(
             f"Training Progress ({len(self.episode_rewards)} episodes) | "
-            f"Score (mean - std): {latest_score:.1f}"
+            f"Mean: {latest_mean:.1f}  Std: {latest_std:.1f}  Score: {latest_score:.1f}"
         )
         plt.tight_layout()
 
-        if self.save_path:
+        if self.display_fn is not None:
+            fn_kw: dict = {"display_id": self.display_id, "update": self._plot_shown}
+            if self.save_path:
+                fn_kw["filename"] = os.path.basename(self.save_path)
+            self.display_fn(fig, **fn_kw)
+            self._plot_shown = True
+        elif self.save_path:
             d = os.path.dirname(self.save_path)
             if d:
                 os.makedirs(d, exist_ok=True)
