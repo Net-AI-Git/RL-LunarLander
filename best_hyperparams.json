@@ -3,7 +3,7 @@
     "learning_rate": 0.0007166134104933579,
     "n_steps": 512,
     "batch_size": 256,
-    "n_epochs": 6,
+    "n_epochs": 4,
     "gamma": 0.9965386306142385,
     "gae_lambda": 0.9077203714673885,
     "ent_coef": 0.09350619667563659
