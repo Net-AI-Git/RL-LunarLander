@@ -1,0 +1,202 @@
+{
+  "study_name": "ppo-lunarlander-v3-focused-search",
+  "goal": "Tune around the locked PPO baseline rather than re-open the whole design.",
+  "fixed_params": {
+    "policy": "MlpPolicy",
+    "env_id": "LunarLander-v3",
+    "train_device": "cpu",
+    "n_envs": 16,
+    "total_timesteps_full_run": 8000000,
+    "seed": 42,
+    "normalize_advantage": true,
+    "use_sde": false,
+    "clip_range_vf": null,
+    "vecnormalize": {
+      "norm_obs": true,
+      "norm_reward": false,
+      "clip_obs": 10.0,
+      "clip_reward": 10.0
+    },
+    "net_arch": {
+      "pi": [256, 256],
+      "vf": [512, 512]
+    },
+    "net_arch_note": "Fixed to match lunar_rl_common.policy_kwargs; not tuned in Optuna."
+  },
+  "search_space": {
+    "n_steps": {
+      "type": "categorical",
+      "choices": [
+        512,
+        1024,
+        2048
+      ],
+      "baseline": 1024,
+      "why": "Main rollout-depth lever. Kept broad enough to test shorter vs deeper trajectories without exploding compute."
+    },
+    "batch_size": {
+      "type": "conditional_categorical",
+      "base_choices": [
+        256,
+        512,
+        1024
+      ],
+      "rule": "Keep only values <= n_steps * n_envs and divisors of n_steps * n_envs",
+      "baseline": 512,
+      "why": "Search only clean mini-batch sizes; avoid truncated minibatches."
+    },
+    "n_epochs": {
+      "type": "categorical",
+      "choices": [
+        4,
+        6,
+        8
+      ],
+      "baseline": 6,
+      "why": "Enough room to test less vs more reuse of each rollout, without going to clearly over-aggressive values."
+    },
+    "learning_rate_start": {
+      "type": "float",
+      "low": 0.0001,
+      "high": 0.0003,
+      "log": true,
+      "baseline": 0.0002,
+      "why": "Focused around the baseline you locked; avoids wasting trials on very low rates that mostly under-train."
+    },
+    "learning_rate_end": {
+      "type": "categorical",
+      "choices": [
+        5e-05,
+        7.5e-05,
+        0.0001
+      ],
+      "baseline": 5e-05,
+      "why": "Late cool-down only. Small discrete set is enough."
+    },
+    "schedule_flat_until_progress": {
+      "type": "categorical",
+      "choices": [
+        0.2,
+        0.25,
+        0.33
+      ],
+      "baseline": 0.25,
+      "why": "Controls when the late schedule starts. 0.25 means decay begins after 75% of training."
+    },
+    "gamma": {
+      "type": "categorical",
+      "choices": [
+        0.993,
+        0.995,
+        0.997,
+        0.999
+      ],
+      "baseline": 0.995,
+      "why": "Search near your long-horizon preference without reopening obviously short-horizon values."
+    },
+    "gae_lambda": {
+      "type": "categorical",
+      "choices": [
+        0.95,
+        0.97,
+        0.98,
+        0.99
+      ],
+      "baseline": 0.98,
+      "why": "Reasonable GAE band around the locked baseline."
+    },
+    "clip_range": {
+      "type": "categorical",
+      "choices": [
+        0.15,
+        0.2,
+        0.25
+      ],
+      "baseline": 0.2,
+      "why": "Let PPO be a bit more conservative or a bit freer, without going to silly extremes."
+    },
+    "ent_coef_start": {
+      "type": "float",
+      "low": 0.003,
+      "high": 0.02,
+      "log": true,
+      "baseline": 0.01,
+      "why": "Most relevant exploration knob for your goal. Focused but not timid."
+    },
+    "ent_coef_end": {
+      "type": "categorical",
+      "choices": [
+        0.001,
+        0.002,
+        0.003
+      ],
+      "baseline": 0.002,
+      "why": "How much exploration remains in the final quarter."
+    },
+    "target_kl": {
+      "type": "categorical",
+      "choices": [
+        0.02,
+        0.03,
+        0.05
+      ],
+      "baseline": 0.03,
+      "why": "Guardrail search; avoids too-tight early stopping."
+    },
+    "vf_coef": {
+      "type": "categorical",
+      "choices": [
+        0.4,
+        0.5,
+        0.7
+      ],
+      "baseline": 0.5,
+      "why": "Lets the critic be a little weaker or stronger without dominating the loss."
+    },
+    "max_grad_norm": {
+      "type": "categorical",
+      "choices": [
+        0.3,
+        0.5,
+        0.7,
+        1.0
+      ],
+      "baseline": 0.5,
+      "why": "Useful stability knob; discrete values are enough."
+    },
+    "activation_fn": {
+      "type": "categorical",
+      "choices": [
+        "Tanh",
+        "ReLU"
+      ],
+      "baseline": "Tanh",
+      "why": "Optional. Tanh is your baseline; ReLU is the only alternative worth checking in this setup."
+    },
+    "ortho_init": {
+      "type": "categorical",
+      "choices": [
+        true,
+        false
+      ],
+      "baseline": true,
+      "why": "Low-priority but cheap to test."
+    }
+  },
+  "do_not_tune_initially": [
+    "policy",
+    "device",
+    "n_envs",
+    "seed",
+    "net_arch",
+    "normalize_advantage",
+    "use_sde",
+    "clip_range_vf",
+    "reward shaping"
+  ],
+  "search_strategy": {
+    "phase_1": "Tune the core PPO dynamics first: n_steps, batch_size, n_epochs, learning_rate_start, gamma, gae_lambda, ent_coef_start, target_kl.",
+    "phase_2": "Only if phase_1 plateaus, extend search to learning_rate_end, ent_coef_end, clip_range, vf_coef, max_grad_norm.",
+    "phase_3": "Optional: activation_fn and ortho_init; net_arch is fixed."
+  }
+}

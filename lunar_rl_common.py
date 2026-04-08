@@ -564,7 +564,7 @@ class LiveRewardPlotCallback(BaseCallback):
 
 
 policy_kwargs = dict(
-    net_arch=dict(pi=[256, 256], vf=[256, 256]),
+    net_arch=dict(pi=[256, 256], vf=[512, 512]),
     activation_fn=torch.nn.Tanh,
     ortho_init=True,
     optimizer_class=torch.optim.Adam,
