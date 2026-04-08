@@ -17,6 +17,9 @@ env/
 # Hugging Face & local model caches
 .hf_home/
 
+# Training checkpoints, plots, CSV logs (local runs)
+checkpoints/
+
 # Packaging / build
 .Python
 build/

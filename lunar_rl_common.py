@@ -26,15 +26,15 @@ DEFAULT_ENV_ID = "LunarLander-v3"
 
 
 def suggested_parallel_envs(
-    reserve_cores: int = 12,
+    reserve_cores: int = 0,
     min_envs: int = 8,
-    max_envs: int = 180,
+    max_envs: int = 192,
 ) -> int:
     """
     SubprocVecEnv worker count from os.cpu_count(): one process per env, mostly CPU-bound
     (Box2D + OpenCV). Keeps the previous default (~32) on typical workstations, scales up
-    on large CPUs (capped at max_envs), and never exceeds n_cpu. reserve_cores leaves headroom
-    for the trainer, GPU driver, and OS (reduces oversubscription / OOM risk vs using every core).
+    on large CPUs (capped at max_envs), and never exceeds n_cpu. Optional reserve_cores leaves
+    headroom for the trainer / OS if you set it > 0.
     """
     n_cpu = int(os.cpu_count() or 1)
     desired = min(max_envs, max(32, n_cpu - reserve_cores))
@@ -43,6 +43,24 @@ def suggested_parallel_envs(
 
 def get_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def resolve_train_device(preference: str = "auto") -> str:
+    """
+    Where SB3 puts the policy/value networks and runs backward/optimizer steps.
+    Vectorized envs (e.g. SubprocVecEnv) always execute in CPU worker processes; only the
+    model's device is selected here.
+    """
+    p = (preference or "auto").strip().lower()
+    if p == "cpu":
+        return "cpu"
+    if p == "cuda":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if p == "auto":
+        return get_device()
+    raise ValueError(
+        f"Unknown train device preference: {preference!r} (use 'auto', 'cpu', or 'cuda')"
+    )
 
 
 class VecNormalizeSaveCallback(BaseCallback):

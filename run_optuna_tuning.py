@@ -13,12 +13,12 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 
 from lunar_rl_common import (
-    get_device,
     make_eval_vec_env_with_stats,
     make_ppo_clip_range_schedule,
     make_ppo_lr_schedule,
     make_train_vec_env,
     policy_kwargs,
+    resolve_train_device,
     suggested_parallel_envs,
 )
 
@@ -38,11 +38,18 @@ def main() -> None:
     p.add_argument("--output", type=str, default="best_hyperparams.json")
     p.add_argument("--env-id", type=str, default="LunarLander-v3")
     p.add_argument("--study-name", type=str, default="ppo-lunarlander")
+    p.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=("auto", "cpu", "cuda"),
+        help="PPO device: auto=cuda if available; match notebook train_device",
+    )
     args = p.parse_args()
     if args.n_envs is None:
         args.n_envs = suggested_parallel_envs()
 
-    device = get_device()
+    device = resolve_train_device(args.device)
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial: optuna.Trial) -> float:
