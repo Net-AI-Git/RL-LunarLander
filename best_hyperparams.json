@@ -1,4 +1,0 @@
-{
-  "params": {},
-  "note": "Hyperparameters were reset for the vector-observation + MlpPolicy pipeline. Previous scores from MultiInput/dict-obs runs are not comparable. Run run_optuna_tuning.py to fill params and obtain new metrics."
-}

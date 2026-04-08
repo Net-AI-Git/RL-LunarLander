@@ -101,13 +101,21 @@ def make_subproc_venv(n_envs, seed, env_id: str | None = None):
     return SubprocVecEnv([make_env(i) for i in range(n_envs)])
 
 
-def make_train_vec_env(n_envs, seed, gamma, env_id: str | None = None):
+def make_train_vec_env(
+    n_envs,
+    seed,
+    gamma,
+    env_id: str | None = None,
+    *,
+    clip_obs: float = 10.0,
+    clip_reward: float = 10.0,
+):
     return VecNormalize(
         make_subproc_venv(n_envs, seed, env_id),
         norm_obs=True,
-        norm_reward=True,
-        clip_obs=10.0,
-        clip_reward=10.0,
+        norm_reward=False,
+        clip_obs=clip_obs,
+        clip_reward=clip_reward,
         gamma=gamma,
         norm_obs_keys=None,
     )
@@ -179,6 +187,84 @@ def make_ppo_clip_range_schedule(
     return FloatSchedule(
         LinearSchedule(float(clip_start), float(clip_end), end_fraction=1.0)
     )
+
+
+def late_linear_value(
+    value_start: float,
+    value_end: float,
+    progress_remaining: float,
+    *,
+    flat_until_progress: float = 0.25,
+) -> float:
+    """
+    Piecewise schedule on SB3 ``progress_remaining`` (1 → 0 over training):
+    constant ``value_start`` while ``progress_remaining >= flat_until_progress`` (first
+    ``1 - flat_until_progress`` fraction of training, e.g. 75% when flat_until_progress=0.25),
+    then linear decay to ``value_end`` at progress 0.
+    """
+    p = float(progress_remaining)
+    f = float(flat_until_progress)
+    if p >= f:
+        return float(value_start)
+    if f <= 0.0:
+        return float(value_end)
+    t = p / f
+    return float(value_end + (value_start - value_end) * t)
+
+
+def make_ppo_lr_schedule_late_linear(
+    lr_start: float = 2e-4,
+    lr_end: float = 5e-5,
+    flat_until_progress: float = 0.25,
+) -> Callable[[float], float]:
+    """LR: flat until 75% of training (progress_remaining >= 0.25), then linear to lr_end."""
+
+    def schedule(progress_remaining: float) -> float:
+        return late_linear_value(
+            lr_start, lr_end, progress_remaining, flat_until_progress=flat_until_progress
+        )
+
+    return schedule
+
+
+def make_ent_coef_schedule_late_linear(
+    ent_start: float = 0.01,
+    ent_end: float = 0.002,
+    flat_until_progress: float = 0.25,
+) -> Callable[[float], float]:
+    """Entropy coef: same 75% flat + linear tail as learning rate."""
+
+    def schedule(progress_remaining: float) -> float:
+        return late_linear_value(
+            ent_start, ent_end, progress_remaining, flat_until_progress=flat_until_progress
+        )
+
+    return schedule
+
+
+class EntropyCoefScheduleCallback(BaseCallback):
+    """
+    SB3 PPO only accepts ``ent_coef`` as float; apply a ``progress_remaining`` schedule
+    by updating ``model.ent_coef`` each rollout (matches the LR schedule timing).
+    """
+
+    def __init__(self, schedule_fn: Callable[[float], float], verbose: int = 0):
+        super().__init__(verbose)
+        self.schedule_fn = schedule_fn
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_training_start(self) -> None:
+        self.model.ent_coef = float(self.schedule_fn(1.0))
+
+    def _on_rollout_end(self) -> None:
+        total = int(getattr(self.model, "_total_timesteps", 0) or 0)
+        if total <= 0:
+            return
+        p = 1.0 - float(self.model.num_timesteps) / float(total)
+        p = max(0.0, min(1.0, p))
+        self.model.ent_coef = float(self.schedule_fn(p))
 
 
 def get_train_vec_normalize(env) -> VecNormalize | None:
@@ -478,6 +564,9 @@ class LiveRewardPlotCallback(BaseCallback):
 
 
 policy_kwargs = dict(
-    activation_fn=torch.nn.ReLU,
-    net_arch=dict(pi=[512, 256], vf=[512, 256]),
+    net_arch=dict(pi=[256, 256], vf=[256, 256]),
+    activation_fn=torch.nn.Tanh,
+    ortho_init=True,
+    optimizer_class=torch.optim.Adam,
+    optimizer_kwargs={},
 )
