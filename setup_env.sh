@@ -38,10 +38,17 @@ fi
   pyvirtualdisplay \
   optuna \
   ipywidgets \
+  ipykernel \
   opencv-python-headless \
   matplotlib
+
+# Register this venv as a Jupyter / VS Code kernel (idempotent)
+"${PY}" -m ipykernel install --user \
+  --name=rl-lunarlander \
+  --display-name="Python (RL-LunarLander .venv)"
 
 echo ""
 echo "Done. Activate:"
 echo "  source ${VENV}/bin/activate"
 echo "Or pick interpreter: ${PY}"
+echo "Jupyter kernel: Python (RL-LunarLander .venv) — select it in the notebook kernel picker."
