@@ -9,6 +9,7 @@ import warnings
 
 import cv2
 import gymnasium as gym
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -317,6 +318,92 @@ class PeriodicEvalCallback(BaseCallback):
             self._last_eval_at = self.num_timesteps
             self._run_eval()
         return True
+
+
+class LiveRewardPlotCallback(BaseCallback):
+    """
+    Rolling training score (mean - std) only, one purple line. Periodic eval stays in CSV only.
+    """
+
+    def __init__(
+        self,
+        window: int = 50,
+        plot_freq: int = 5000,
+        eval_color: str = "#7B1FA2",
+        save_path: str | None = None,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.window = window
+        self.plot_freq = plot_freq
+        self.eval_color = eval_color
+        self.save_path = save_path
+        self.episode_rewards: list[float] = []
+        self.episode_timesteps: list[int] = []
+        self._last_plot_at = 0
+
+    def _on_training_start(self) -> None:
+        self._last_plot_at = self.num_timesteps
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            ep = info.get("episode")
+            if ep is not None:
+                self.episode_rewards.append(float(ep["r"]))
+                self.episode_timesteps.append(int(self.num_timesteps))
+
+        if len(self.episode_rewards) >= self.window:
+            if self.num_timesteps - self._last_plot_at >= self.plot_freq:
+                self._last_plot_at = self.num_timesteps
+                self._update_plot()
+        return True
+
+    def _update_plot(self) -> None:
+        rews = np.array(self.episode_rewards, dtype=np.float64)
+        ts = np.array(self.episode_timesteps, dtype=np.int64)
+
+        mean = np.convolve(rews, np.ones(self.window) / self.window, mode="valid")
+        std = np.array(
+            [
+                rews[max(0, i - self.window) : i].std()
+                for i in range(self.window, len(rews) + 1)
+            ]
+        )
+        score = mean - std
+        ts_valid = ts[self.window - 1 :]
+
+        fig, ax1 = plt.subplots(figsize=(12, 5))
+        ax1.plot(
+            ts_valid,
+            score,
+            color=self.eval_color,
+            linewidth=2,
+            label="Score (mean - std)",
+        )
+        ax1.set_xlabel("Timesteps")
+        ax1.set_ylabel("Score (mean - std)")
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc="lower right")
+        latest_score = float(score[-1])
+        ax1.set_title(
+            f"Training Progress ({len(self.episode_rewards)} episodes) | "
+            f"Score (mean - std): {latest_score:.1f}"
+        )
+        plt.tight_layout()
+
+        if self.save_path:
+            d = os.path.dirname(self.save_path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            fig.savefig(self.save_path, format="png", bbox_inches="tight", dpi=100)
+            try:
+                sz = os.path.getsize(self.save_path)
+            except OSError:
+                sz = -1
+            print(f"[nb plot] {self.save_path} ({sz} bytes)")
+
+        plt.close(fig)
 
 
 class CustomCombinedExtractor(BaseFeaturesExtractor):
