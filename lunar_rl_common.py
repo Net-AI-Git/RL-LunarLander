@@ -25,6 +25,22 @@ from stable_baselines3.common.vec_env import unwrap_vec_normalize
 DEFAULT_ENV_ID = "LunarLander-v3"
 
 
+def suggested_parallel_envs(
+    reserve_cores: int = 12,
+    min_envs: int = 8,
+    max_envs: int = 180,
+) -> int:
+    """
+    SubprocVecEnv worker count from os.cpu_count(): one process per env, mostly CPU-bound
+    (Box2D + OpenCV). Keeps the previous default (~32) on typical workstations, scales up
+    on large CPUs (capped at max_envs), and never exceeds n_cpu. reserve_cores leaves headroom
+    for the trainer, GPU driver, and OS (reduces oversubscription / OOM risk vs using every core).
+    """
+    n_cpu = int(os.cpu_count() or 1)
+    desired = min(max_envs, max(32, n_cpu - reserve_cores))
+    return max(min_envs, min(desired, n_cpu))
+
+
 def get_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -19,6 +19,7 @@ from lunar_rl_common import (
     make_ppo_lr_schedule,
     make_train_vec_env,
     policy_kwargs,
+    suggested_parallel_envs,
 )
 
 
@@ -27,12 +28,19 @@ def main() -> None:
     p.add_argument("--n-trials", type=int, default=30)
     p.add_argument("--timesteps-per-trial", type=int, default=200_000)
     p.add_argument("--n-eval-episodes", type=int, default=10)
-    p.add_argument("--n-envs", type=int, default=32)
+    p.add_argument(
+        "--n-envs",
+        type=int,
+        default=None,
+        help="SubprocVecEnv size; default: auto from CPU (see lunar_rl_common.suggested_parallel_envs)",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=str, default="best_hyperparams.json")
     p.add_argument("--env-id", type=str, default="LunarLander-v3")
     p.add_argument("--study-name", type=str, default="ppo-lunarlander")
     args = p.parse_args()
+    if args.n_envs is None:
+        args.n_envs = suggested_parallel_envs()
 
     device = get_device()
     optuna.logging.set_verbosity(optuna.logging.WARNING)

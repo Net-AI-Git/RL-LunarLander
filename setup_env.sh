@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# One-shot dev environment: system packages (Linux/apt) + Python venv + pip deps.
+# One-shot dev environment: matches the course-style cells below, plus this repo's extras.
+#
+# Original notebook-style (equivalent — no need to run pip/pyvirtualdisplay twice):
+#   !pip install stable-baselines3 "gymnasium[box2d]" huggingface_sb3 pyvirtualdisplay optuna ipywidgets opencv-python-headless
+#   !sudo apt-get update
+#   !sudo apt-get install -y python3-opengl
+#   !apt install -y ffmpeg
+#   !apt install -y xvfb
+#   !pip install pyvirtualdisplay   # duplicate of line 1 — omitted here
+#   !pip3 install pyvirtualdisplay  # duplicate — omitted here
+#
 # Usage:
 #   chmod +x setup_env.sh && ./setup_env.sh
-# Skip apt (no sudo / non-Debian):  SKIP_SYSTEM=1 ./setup_env.sh
+# Skip apt: SKIP_SYSTEM=1 ./setup_env.sh
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,14 +24,19 @@ PIP="${VENV}/bin/pip"
 echo "==> RL-LunarLander: create env in ${VENV}"
 
 if [[ "${SKIP_SYSTEM:-0}" != "1" ]] && command -v apt-get >/dev/null 2>&1; then
-  echo "==> Installing system packages (needs sudo for apt)..."
+  echo "==> System packages (same as apt-get update + opengl + ffmpeg + xvfb)..."
   sudo apt-get update -qq
+  # One line = update + python3-opengl + ffmpeg + xvfb; also swig/cmake for Box2D, python3-venv for venv
   sudo apt-get install -y -qq \
-    swig cmake python3-opengl ffmpeg xvfb \
+    python3-opengl \
+    ffmpeg \
+    xvfb \
+    swig \
+    cmake \
     python3-venv
 else
-  echo "==> Skipping apt (SKIP_SYSTEM=1 or no apt-get). On Linux install manually:"
-  echo "    sudo apt-get update && sudo apt-get install -y swig cmake python3-opengl ffmpeg xvfb python3-venv"
+  echo "==> Skipping apt (SKIP_SYSTEM=1 or no apt-get). On Linux run manually:"
+  echo "    sudo apt-get update && sudo apt-get install -y python3-opengl ffmpeg xvfb swig cmake python3-venv"
 fi
 
 if [[ ! -x "${PY}" ]]; then
@@ -29,20 +44,24 @@ if [[ ! -x "${PY}" ]]; then
 fi
 
 "${PIP}" install --upgrade pip
-# Python deps (Box2D / RL stack / Hub / notebooks)
+
+echo "==> Pip: course baseline (your first !pip install line, exact set)"
 "${PIP}" install \
   stable-baselines3 \
   "gymnasium[box2d]" \
   huggingface_sb3 \
-  huggingface_hub \
   pyvirtualdisplay \
   optuna \
   ipywidgets \
-  ipykernel \
-  opencv-python-headless \
-  matplotlib
+  opencv-python-headless
 
-# Register this venv as a Jupyter / VS Code kernel (idempotent)
+echo "==> Pip: this repo + notebooks (Hub upload, plots, Jupyter kernel — not in the short course line)"
+"${PIP}" install \
+  huggingface_hub \
+  matplotlib \
+  ipykernel
+
+# Register Jupyter / Cursor kernel (needs ipykernel above)
 "${PY}" -m ipykernel install --user \
   --name=rl-lunarlander \
   --display-name="Python (RL-LunarLander .venv)"
@@ -50,5 +69,5 @@ fi
 echo ""
 echo "Done. Activate:"
 echo "  source ${VENV}/bin/activate"
-echo "Or pick interpreter: ${PY}"
-echo "Jupyter kernel: Python (RL-LunarLander .venv) — select it in the notebook kernel picker."
+echo "Or: ${PY}"
+echo "Jupyter kernel: Python (RL-LunarLander .venv)"
