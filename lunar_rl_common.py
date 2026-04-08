@@ -226,8 +226,16 @@ def get_train_vec_normalize(env) -> VecNormalize | None:
 
 class PeriodicEvalCallback(BaseCallback):
     """
-    Same protocol as pre-Hub eval: `evaluate_policy` on a synced VecNormalize eval env (dict obs).
-    The env simulation runs on CPU (DummyVecEnv); policy inference uses the model's device.
+    Periodic **held-out** evaluation during training:
+
+    1. Take the current training ``VecNormalize`` stats (``get_train_vec_normalize``).
+    2. Build a **single-env** eval stack via ``make_eval_vec_env_synced`` — same dict obs,
+       same obs normalization as training, ``norm_reward=False``, ``training=False``.
+    3. Run Stable-Baselines3 ``evaluate_policy`` for ``n_eval_episodes`` (default 10),
+       **deterministic** actions, and record ``mean_reward`` and ``std_reward`` (std across
+       those episode returns). Rows are appended to ``csv_path`` and ``eval_history``.
+
+    This matches the notebook / Hub eval path (synced normalization, no reward clipping in eval).
     """
 
     def __init__(
@@ -323,10 +331,19 @@ class PeriodicEvalCallback(BaseCallback):
 
 class LiveRewardPlotCallback(BaseCallback):
     """
-    Live training plot (as in pre-refactor notebook / commit 127440b): rolling mean, score
-    (mean − std), rolling std on a twin axis, optional periodic eval mean ± band, optional
-    horizontal \"solved\" reference. Saves PNG; optional ``display_fn`` (e.g. notebook’s
-    ``display_mpl_figure_as_png``) can refresh Jupyter output with ``display_id``.
+    Live training plot: rolling **training** episode stats (from env ``info[\"episode\"]``),
+    not the same draw as ``evaluate_policy``:
+
+    - **Mean reward**: rolling mean of the last ``window`` completed training episode returns.
+    - **Std (red axis)**: for each index ``i``, sample std of training returns in
+      ``rews[i-window:i]`` (last ``window`` episodes ending at ``i``).
+    - **Score (mean − std)**: ``mean[i] - std[i]`` on that rolling window — a training-curve
+      analogue of the leaderboard-style ``mean - std``, not the periodic eval numbers.
+
+    Optional: overlay periodic eval **mean** and **mean − std** from
+    ``PeriodicEvalCallback.eval_history`` (no ± band fill).
+
+    Saves PNG; optional ``display_fn`` can refresh Jupyter output with ``display_id``.
     """
 
     DISPLAY_ID_DEFAULT = "rl_lunarlander_live_reward"
@@ -337,6 +354,7 @@ class LiveRewardPlotCallback(BaseCallback):
         plot_freq: int = 5000,
         periodic_eval_cb: PeriodicEvalCallback | None = None,
         eval_color: str = "#7B1FA2",
+        eval_conservative_color: str = "#311B92",
         solved_reference_y: float | None = 350.0,
         save_path: str | None = None,
         display_fn: Callable[..., None] | None = None,
@@ -348,6 +366,7 @@ class LiveRewardPlotCallback(BaseCallback):
         self.plot_freq = int(plot_freq)
         self.periodic_eval_cb = periodic_eval_cb
         self.eval_color = eval_color
+        self.eval_conservative_color = eval_conservative_color
         self.solved_reference_y = solved_reference_y
         self.save_path = save_path
         self.display_fn = display_fn
@@ -415,22 +434,25 @@ class LiveRewardPlotCallback(BaseCallback):
                     s = float(h["std_reward"])
                     es.append(s if np.isfinite(s) else 0.0)
             if ex:
+                em_a = np.array(em, dtype=np.float64)
+                es_a = np.array(es, dtype=np.float64)
                 ax1.plot(
                     ex,
-                    em,
+                    em_a,
                     color=self.eval_color,
                     linewidth=2,
                     marker="o",
                     markersize=4,
                     label="Periodic eval (mean)",
                 )
-                ax1.fill_between(
+                ax1.plot(
                     ex,
-                    np.array(em) - np.array(es),
-                    np.array(em) + np.array(es),
-                    color=self.eval_color,
-                    alpha=0.15,
-                    label="Periodic eval ± std",
+                    em_a - es_a,
+                    color=self.eval_conservative_color,
+                    linewidth=2,
+                    marker="s",
+                    markersize=4,
+                    label="Periodic eval (mean − std)",
                 )
 
         if self.solved_reference_y is not None:
