@@ -16,6 +16,7 @@ from gymnasium import spaces
 from gymnasium.wrappers.transform_observation import AddRenderObservation
 
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import FloatSchedule, LinearSchedule
@@ -223,14 +224,14 @@ def get_train_vec_normalize(env) -> VecNormalize | None:
 
 class PeriodicEvalCallback(BaseCallback):
     """
-    Run eval for a fixed step budget on a synced eval env (eval-only VecNormalize, no reward norm).
-    Appends rows to CSV and stores records in eval_history for plotting.
+    Same protocol as pre-Hub eval: `evaluate_policy` on a synced VecNormalize eval env (dict obs).
+    The env simulation runs on CPU (DummyVecEnv); policy inference uses the model's device.
     """
 
     def __init__(
         self,
         eval_freq: int,
-        n_eval_steps: int,
+        n_eval_episodes: int,
         seed: int,
         csv_path: str = "logs/periodic_eval.csv",
         env_id: str | None = None,
@@ -239,7 +240,7 @@ class PeriodicEvalCallback(BaseCallback):
     ):
         super().__init__(verbose)
         self.eval_freq = eval_freq
-        self.n_eval_steps = n_eval_steps
+        self.n_eval_episodes = n_eval_episodes
         self.seed = seed
         self.csv_path = csv_path
         self.env_id = env_id
@@ -267,7 +268,7 @@ class PeriodicEvalCallback(BaseCallback):
                         "mean_reward",
                         "std_reward",
                         "n_episodes",
-                        "n_eval_steps",
+                        "n_eval_episodes",
                     ]
                 )
             w.writerow(
@@ -276,7 +277,7 @@ class PeriodicEvalCallback(BaseCallback):
                     mean_reward,
                     std_reward,
                     n_episodes,
-                    self.n_eval_steps,
+                    self.n_eval_episodes,
                 ]
             )
         self.eval_history.append(
@@ -296,35 +297,18 @@ class PeriodicEvalCallback(BaseCallback):
 
         eval_env = make_eval_vec_env_synced(train_vn, self.seed, self.env_id)
         try:
-            obs = eval_env.reset()
-            ep_returns: list[float] = []
-            ep_return = 0.0
-            steps = 0
-            while steps < self.n_eval_steps:
-                action, _ = self.model.predict(obs, deterministic=self.deterministic)
-                obs, rewards, dones, _ = eval_env.step(action)
-                ep_return += float(rewards[0])
-                steps += 1
-                if dones[0]:
-                    ep_returns.append(ep_return)
-                    ep_return = 0.0
-            if ep_return != 0.0 and not dones[0]:
-                # unfinished episode at horizon — optional: could append; plan focuses on completed
-                pass
-
-            n_ep = len(ep_returns)
-            if n_ep >= 1:
-                mean_r = float(np.mean(ep_returns))
-                std_r = float(np.std(ep_returns)) if n_ep > 1 else 0.0
-            else:
-                mean_r = float("nan")
-                std_r = float("nan")
-                warnings.warn(
-                    "PeriodicEvalCallback: no completed episode in eval window; "
-                    "increase n_eval_steps or check env."
-                )
-
-            self._write_row(self.num_timesteps, mean_r, std_r, n_ep)
+            mean_r, std_r = evaluate_policy(
+                self.model,
+                eval_env,
+                n_eval_episodes=self.n_eval_episodes,
+                deterministic=self.deterministic,
+            )
+            self._write_row(
+                self.num_timesteps,
+                float(mean_r),
+                float(std_r),
+                self.n_eval_episodes,
+            )
         finally:
             eval_env.close()
 

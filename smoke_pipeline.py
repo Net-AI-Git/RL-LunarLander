@@ -54,7 +54,7 @@ def main() -> int:
         # Trigger at least one eval during short run (eval_freq small)
         eval_cb = PeriodicEvalCallback(
             eval_freq=2048,
-            n_eval_steps=6000,
+            n_eval_episodes=2,
             seed=seed,
             csv_path=csv_path,
             env_id=env_id,
