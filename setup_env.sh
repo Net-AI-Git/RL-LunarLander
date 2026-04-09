@@ -55,11 +55,13 @@ echo "==> Pip: course baseline (your first !pip install line, exact set)"
   ipywidgets
 
 echo "==> Pip: this repo + notebooks (Hub upload, plots, Jupyter kernel — not in the short course line)"
+# ray[tune]: PBT launcher; matplotlib: plots; plotly: optional HTML in ray_tune_visualization.py
 "${PIP}" install \
   huggingface_hub \
   matplotlib \
   ipykernel \
-  "ray[tune]"
+  "ray[tune]" \
+  plotly
 
 # Register Jupyter / Cursor kernel (needs ipykernel above)
 "${PY}" -m ipykernel install --user \
