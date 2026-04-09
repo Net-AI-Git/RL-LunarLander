@@ -10,6 +10,7 @@ Environment (optional):
 - ``RAY_RESULTS_DIR`` — root for Tune storage (default: ``./ray_results`` under cwd).
 - ``RAY_PBT_EXPERIMENT_NAME`` — run name (default: ``lunarlander_pbt``).
 - ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: 5).
+- ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** (default: ``16``, aligned with ``base.n_envs``). On a ~256 vCPU machine, ``pbt.num_samples`` 16 uses the cluster fully when all trials run.
 
 Report cadence (see ``ray_pbt_config.json`` ``pbt`` + ``base``):
 
@@ -43,8 +44,8 @@ from ray_tune_visualization import (
     refresh_tune_visualizations,
 )
 
-# SubprocVecEnv uses one CPU per env by default; reserve headroom for the learner.
-_DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "18"))
+# SubprocVecEnv: ~1 CPU per env; default matches ``base.n_envs`` in ``ray_pbt_config.json``.
+_DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "16"))
 
 _RESULTS_ROOT = os.environ.get("RAY_RESULTS_DIR")
 _DEFAULT_STORAGE = os.path.join(os.getcwd(), "ray_results")

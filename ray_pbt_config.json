@@ -33,7 +33,7 @@
   "pbt": {
     "metric": "eval_score",
     "mode": "max",
-    "num_samples": 8,
+    "num_samples": 16,
     "report_interval_timesteps": 200000,
     "perturbation_interval": 2,
     "burn_in_period": 4,
