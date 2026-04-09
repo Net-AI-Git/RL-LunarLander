@@ -508,21 +508,22 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     """
     Ray Tune **Function API** trainable: chunked PPO, eval, Tune checkpoints.
 
-    Uses ``train.get_checkpoint()`` to restore and ``train.report(..., checkpoint=...)`` to save.
+    Uses ``ray.tune.get_checkpoint()`` to restore and ``ray.tune.report(..., checkpoint=...)`` to save
+    (not ``ray.train`` — deprecated inside Tune function trainables, Ray 2.5+).
     Schedules are rebuilt from ``merged[\"base\"]`` each chunk (and on resume after PBT).
 
     Requires: ``pip install 'ray[tune]'``.
     """
     try:
-        from ray import train as ray_train
-        from ray.air import Checkpoint
+        from ray import tune
+        from ray.tune import Checkpoint
     except ImportError as e:
         raise ImportError(
             "train_lunarlander_pbt requires Ray Tune; install with: pip install 'ray[tune]'"
         ) from e
 
     static = get_default_pbt_config()
-    checkpoint = ray_train.get_checkpoint()
+    checkpoint = tune.get_checkpoint()
     env_id = _env_id_arg(config)
 
     if checkpoint:
@@ -613,7 +614,7 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
                 "timesteps_done": timesteps_done,
             }
             report_metrics.update(hp_metrics_from_merged(merged))
-            ray_train.report(
+            tune.report(
                 report_metrics,
                 checkpoint=Checkpoint.from_directory(ckpt_dir),
             )

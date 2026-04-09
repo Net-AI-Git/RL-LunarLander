@@ -20,6 +20,9 @@ env/
 # Training checkpoints, plots, CSV logs (local runs)
 checkpoints/
 
+# Ray Tune experiment outputs (default: ./ray_results)
+ray_results/
+
 # Packaging / build
 .Python
 build/

@@ -11,7 +11,7 @@
 #   !pip3 install pyvirtualdisplay  # duplicate — omitted here
 #
 # Usage:
-#   cd /workspace/RL-LunarLander && chmod +x setup_env.sh && ./setup_env.sh
+#   chmod +x /workspace/RL-LunarLander/setup_env.sh && /workspace/RL-LunarLander/setup_env.sh
 # Skip apt: SKIP_SYSTEM=1 ./setup_env.sh
 
 set -euo pipefail
@@ -52,16 +52,14 @@ echo "==> Pip: course baseline (your first !pip install line, exact set)"
   huggingface_sb3 \
   pyvirtualdisplay \
   optuna \
-  ipywidgets
+  ipywidgets \
+  opencv-python-headless
 
 echo "==> Pip: this repo + notebooks (Hub upload, plots, Jupyter kernel — not in the short course line)"
-# ray[tune]: PBT launcher; matplotlib: plots; plotly: optional HTML in ray_tune_visualization.py
 "${PIP}" install \
   huggingface_hub \
   matplotlib \
-  ipykernel \
-  "ray[tune]" \
-  plotly
+  ipykernel
 
 # Register Jupyter / Cursor kernel (needs ipykernel above)
 "${PY}" -m ipykernel install --user \

@@ -12,6 +12,10 @@ Environment (optional):
 - ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: 5).
 - ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** (default: ``16``, aligned with ``base.n_envs``). On a ~256 vCPU machine, ``pbt.num_samples`` 16 uses the cluster fully when all trials run.
 
+If Ray fails to start with ``Timed out waiting for ... gcs_server_port`` (GCS): stop stale Ray
+(``ray stop --force``), remove old sessions under ``/tmp/ray/session_*`` when nothing is running,
+ensure ``/tmp`` is writable and has space; optionally ``export RAY_TMPDIR=/path/to/fast/local/dir``.
+
 Report cadence (see ``ray_pbt_config.json`` ``pbt`` + ``base``):
 
 - Each ``tune.report`` is one **training_iteration** after ``report_interval_timesteps`` env steps
@@ -33,6 +37,7 @@ from __future__ import annotations
 import os
 import warnings
 
+import ray
 from ray import tune
 from ray.tune import CheckpointConfig, RunConfig, Tuner, TuneConfig
 from ray.tune.schedulers import PopulationBasedTraining
@@ -126,6 +131,10 @@ def initial_param_space(static: dict) -> dict:
 
 
 def main() -> None:
+    # Initialize before Tune so ``tuner.fit`` skips auto-init; dashboard off reduces startup work.
+    if not ray.is_initialized():
+        ray.init(include_dashboard=False)
+
     static = get_default_pbt_config()
     pbt_cfg = static["pbt"]
 
