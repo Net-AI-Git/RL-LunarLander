@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import warnings
 
 from ray import tune
 from ray.tune import Tuner, TuneConfig
@@ -26,6 +27,7 @@ from ray.tune.schedulers import PopulationBasedTrainingReplay
 
 from ray_pbt_launcher import _DEFAULT_CPUS, build_run_config, initial_param_space
 from ray_pbt_train import get_default_pbt_config, train_lunarlander_pbt
+from ray_tune_visualization import print_and_save_run_summary, refresh_tune_visualizations
 
 
 def main() -> None:
@@ -69,10 +71,27 @@ def main() -> None:
             scheduler=replay,
             num_samples=1,
         ),
-        run_config=build_run_config(experiment_name=exp_name),
+        run_config=build_run_config(
+            experiment_name=exp_name,
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        ),
     )
 
-    tuner.fit()
+    result = tuner.fit()
+    try:
+        refresh_tune_visualizations(
+            result.experiment_path,
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        )
+        print_and_save_run_summary(
+            result.experiment_path,
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        )
+    except Exception as e:
+        warnings.warn(f"Post-fit visualization refresh failed: {e}", UserWarning)
 
 
 if __name__ == "__main__":

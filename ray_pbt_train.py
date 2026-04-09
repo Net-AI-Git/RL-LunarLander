@@ -46,6 +46,36 @@ PERIODIC_EVAL_CSV = "periodic_eval.csv"
 
 _DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "ray_pbt_config.json")
 
+# Logged each tune.report so progress.csv contains HP evolution (config is stripped by Ray CSV).
+_REPORT_METRIC_HP_KEYS = (
+    "learning_rate",
+    "lr_end",
+    "ent_coef",
+    "ent_coef_end",
+    "schedule_flat_until",
+    "vf_coef",
+    "target_kl",
+    "clip_range",
+    "max_grad_norm",
+)
+
+
+def hp_metrics_from_merged(merged: Mapping[str, Any]) -> dict[str, float]:
+    """Flatten current trial hyperparameters from ``merged[\"base\"]`` for Tune metrics."""
+    b = merged["base"]
+    out: dict[str, float] = {}
+    for k in _REPORT_METRIC_HP_KEYS:
+        if k not in b:
+            continue
+        v = b[k]
+        if v is None:
+            continue
+        try:
+            out[k] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 def _activation_from_name(name: str) -> type[torch.nn.Module]:
     n = (name or "tanh").strip().lower()
@@ -576,13 +606,15 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
                 best_eval_score_so_far=best_eval,
             )
             # Tune increments ``training_iteration`` each report (PBT time_attr).
+            report_metrics: dict[str, Any] = {
+                "eval_mean_reward": mean_r,
+                "eval_std_reward": std_r,
+                "eval_score": eval_score,
+                "timesteps_done": timesteps_done,
+            }
+            report_metrics.update(hp_metrics_from_merged(merged))
             ray_train.report(
-                {
-                    "eval_mean_reward": mean_r,
-                    "eval_std_reward": std_r,
-                    "eval_score": eval_score,
-                    "timesteps_done": timesteps_done,
-                },
+                report_metrics,
                 checkpoint=Checkpoint.from_directory(ckpt_dir),
             )
         finally:

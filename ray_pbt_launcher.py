@@ -30,6 +30,7 @@ PBT only mutates the hyperparameters listed in ``_hyperparam_mutations``.
 from __future__ import annotations
 
 import os
+import warnings
 
 from ray import tune
 from ray.air.config import CheckpointConfig
@@ -37,6 +38,11 @@ from ray.tune import RunConfig, Tuner, TuneConfig
 from ray.tune.schedulers import PopulationBasedTraining
 
 from ray_pbt_train import get_default_pbt_config, train_lunarlander_pbt
+from ray_tune_visualization import (
+    TuneVisualizationCallback,
+    print_and_save_run_summary,
+    refresh_tune_visualizations,
+)
 
 # SubprocVecEnv uses one CPU per env by default; reserve headroom for the learner.
 _DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "18"))
@@ -63,14 +69,29 @@ def _hyperparam_mutations() -> dict:
     }
 
 
-def build_run_config(*, experiment_name: str | None = None) -> RunConfig:
+def build_run_config(
+    *,
+    experiment_name: str | None = None,
+    callbacks: list | None = None,
+    metric: str = "eval_score",
+    mode: str = "max",
+    top_k: int = 8,
+) -> RunConfig:
     """
     Tune/AIR storage + checkpoint retention. Function-API trials still rely on manual
     ``tune.report(..., checkpoint=...)``; ``checkpoint_frequency`` stays 0.
+
+    When ``callbacks`` is ``None`` (default), attaches ``TuneVisualizationCallback`` so
+    ``visualizations/`` updates after each trial and at experiment end. Pass ``[]`` to disable.
     """
     name = experiment_name or os.environ.get("RAY_PBT_EXPERIMENT_NAME", "lunarlander_pbt")
     storage = _RESULTS_ROOT if _RESULTS_ROOT else _DEFAULT_STORAGE
     keep = int(os.environ.get("RAY_PBT_CHECKPOINTS_TO_KEEP", "5"))
+    cb = callbacks
+    if cb is None:
+        cb = [
+            TuneVisualizationCallback(metric=metric, mode=mode, top_k=top_k),
+        ]
     return RunConfig(
         name=name,
         storage_path=storage,
@@ -80,6 +101,7 @@ def build_run_config(*, experiment_name: str | None = None) -> RunConfig:
             checkpoint_score_order="max",
             checkpoint_frequency=0,
         ),
+        callbacks=cb,
     )
 
 
@@ -136,10 +158,26 @@ def main() -> None:
             scheduler=pbt,
             num_samples=num_samples,
         ),
-        run_config=build_run_config(),
+        run_config=build_run_config(
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        ),
     )
 
-    tuner.fit()
+    result = tuner.fit()
+    try:
+        refresh_tune_visualizations(
+            result.experiment_path,
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        )
+        print_and_save_run_summary(
+            result.experiment_path,
+            metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
+        )
+    except Exception as e:
+        warnings.warn(f"Post-fit visualization refresh failed: {e}", UserWarning)
 
 
 if __name__ == "__main__":
