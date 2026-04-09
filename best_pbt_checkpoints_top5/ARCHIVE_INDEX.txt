@@ -1,0 +1,11 @@
+Files added for PBT re-tuning if ray_results/ is removed:
+
+- ray_pbt_config.json — static experiment config from the repo (search space baseline).
+- trial_summary.csv — per-trial max eval_score (from visualizations/).
+- best_trial_summary.json — best-trial summary if present.
+- trial_<trial_id>_params.json — Tune initial params for that trial directory.
+- trial_<trial_id>_progress.csv — full training/eval time series for that trial.
+
+Trials archived: 1e06f_00012, 1e06f_00000, 1e06f_00003 (unique trials referenced by the top-5 checkpoint export in MANIFEST.txt).
+
+The five rank*_.../ folders still hold model.zip, vecnormalize.pkl, trainer_state.json each.

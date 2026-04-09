@@ -1,0 +1,43 @@
+{
+  "base": {
+    "train_device": "cpu",
+    "n_envs": 16,
+    "total_timesteps": 8000000,
+    "n_steps": 1024,
+    "batch_size": 512,
+    "n_epochs": 6,
+    "gamma": 0.995,
+    "gae_lambda": 0.98,
+    "clip_range": 0.2,
+    "clip_range_vf": null,
+    "normalize_advantage": true,
+    "vf_coef": 0.5,
+    "max_grad_norm": 0.5,
+    "target_kl": 0.03,
+    "use_sde": false,
+    "learning_rate": 0.0002,
+    "lr_end": 0.00005,
+    "ent_coef": 0.01,
+    "ent_coef_end": 0.002,
+    "schedule_flat_until": 0.25,
+    "periodic_eval_episodes": 10,
+    "vecnormalize_clip_obs": 10.0,
+    "vecnormalize_clip_reward": 10.0
+  },
+  "fixed_policy_kwargs": {
+    "pi": [256, 256],
+    "vf": [512, 512],
+    "activation_fn": "tanh",
+    "ortho_init": true
+  },
+  "pbt": {
+    "metric": "eval_score",
+    "mode": "max",
+    "num_samples": 16,
+    "report_interval_timesteps": 200000,
+    "perturbation_interval": 2,
+    "burn_in_period": 4,
+    "resample_probability": 0.25,
+    "quantile_fraction": 0.25
+  }
+}

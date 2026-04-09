@@ -1,0 +1,12 @@
+{
+  "clip_range": 0.25,
+  "ent_coef": 0.008,
+  "ent_coef_end": 0.003,
+  "learning_rate": 0.00016,
+  "lr_end": 5e-05,
+  "max_grad_norm": 0.7,
+  "schedule_flat_until": 0.2,
+  "seed": 289082777,
+  "target_kl": 0.03,
+  "vf_coef": 0.4
+}
