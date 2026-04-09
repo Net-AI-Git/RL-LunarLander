@@ -532,7 +532,6 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     report_interval = _report_interval_timesteps(merged)
     n_eval_episodes = int(base["periodic_eval_episodes"])
 
-    iteration = 0
     while timesteps_done < total_timesteps:
         apply_schedules_from_base(
             model,
@@ -576,19 +575,17 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
                 current_config=merged,
                 best_eval_score_so_far=best_eval,
             )
+            # Tune increments ``training_iteration`` each report (PBT time_attr).
             ray_train.report(
                 {
                     "eval_mean_reward": mean_r,
                     "eval_std_reward": std_r,
                     "eval_score": eval_score,
                     "timesteps_done": timesteps_done,
-                    "training_iteration": iteration,
                 },
                 checkpoint=Checkpoint.from_directory(ckpt_dir),
             )
         finally:
             shutil.rmtree(ckpt_dir, ignore_errors=True)
-
-        iteration += 1
 
     train_env.close()

@@ -5,9 +5,26 @@ Population Based Training launcher for Lunar Lander PPO.
 Run from repo root (with Ray installed: pip install 'ray[tune]'):
   python ray_pbt_launcher.py
 
+Environment (optional):
+
+- ``RAY_RESULTS_DIR`` — root for Tune storage (default: ``./ray_results`` under cwd).
+- ``RAY_PBT_EXPERIMENT_NAME`` — run name (default: ``lunarlander_pbt``).
+- ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: 5).
+
+Report cadence (see ``ray_pbt_config.json`` ``pbt`` + ``base``):
+
+- Each ``tune.report`` is one **training_iteration** after ``report_interval_timesteps`` env steps
+  (default 200_000) and ``periodic_eval_episodes`` eval passes (default 10).
+- ``perturbation_interval=2`` means PBT considers exploit/explore every **2** reports (400K steps
+  between perturbation checks).
+- ``burn_in_period=4`` is **4** reports before PBT mutates (~800K steps), reducing checkpoint churn.
+
+SB3 checkpoints are saved only inside ``train_lunarlander_pbt`` via
+``tune.report(..., checkpoint=...)`` — not via ``CheckpointConfig.checkpoint_frequency``.
+
 Rollout geometry (n_envs, n_steps, batch_size, n_epochs), gamma, gae_lambda,
 policy_kwargs, VecNormalize settings, and train_device are fixed in ``ray_pbt_config.json``.
-PBT only mutates the hyperparameters listed in ``HYPERPARAM_MUTATIONS``.
+PBT only mutates the hyperparameters listed in ``_hyperparam_mutations``.
 """
 
 from __future__ import annotations
@@ -15,6 +32,7 @@ from __future__ import annotations
 import os
 
 from ray import tune
+from ray.air.config import CheckpointConfig
 from ray.tune import RunConfig, Tuner, TuneConfig
 from ray.tune.schedulers import PopulationBasedTraining
 
@@ -22,6 +40,9 @@ from ray_pbt_train import get_default_pbt_config, train_lunarlander_pbt
 
 # SubprocVecEnv uses one CPU per env by default; reserve headroom for the learner.
 _DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "18"))
+
+_RESULTS_ROOT = os.environ.get("RAY_RESULTS_DIR")
+_DEFAULT_STORAGE = os.path.join(os.getcwd(), "ray_results")
 
 
 def _hyperparam_mutations() -> dict:
@@ -42,7 +63,27 @@ def _hyperparam_mutations() -> dict:
     }
 
 
-def _initial_param_space(static: dict) -> dict:
+def build_run_config(*, experiment_name: str | None = None) -> RunConfig:
+    """
+    Tune/AIR storage + checkpoint retention. Function-API trials still rely on manual
+    ``tune.report(..., checkpoint=...)``; ``checkpoint_frequency`` stays 0.
+    """
+    name = experiment_name or os.environ.get("RAY_PBT_EXPERIMENT_NAME", "lunarlander_pbt")
+    storage = _RESULTS_ROOT if _RESULTS_ROOT else _DEFAULT_STORAGE
+    keep = int(os.environ.get("RAY_PBT_CHECKPOINTS_TO_KEEP", "5"))
+    return RunConfig(
+        name=name,
+        storage_path=storage,
+        checkpoint_config=CheckpointConfig(
+            num_to_keep=keep,
+            checkpoint_score_attribute="eval_score",
+            checkpoint_score_order="max",
+            checkpoint_frequency=0,
+        ),
+    )
+
+
+def initial_param_space(static: dict) -> dict:
     """
     Explicit baseline from ``static['base']`` for every mutated key (single choice each).
     PBT applies ``hyperparam_mutations`` later. ``seed`` is free so 8 trials are not identical.
@@ -78,7 +119,7 @@ def main() -> None:
         log_config=True,
     )
 
-    param_space = _initial_param_space(static)
+    param_space = initial_param_space(static)
     num_samples = int(pbt_cfg["num_samples"])
 
     trainable = tune.with_resources(
@@ -95,7 +136,7 @@ def main() -> None:
             scheduler=pbt,
             num_samples=num_samples,
         ),
-        run_config=RunConfig(name="lunarlander_pbt"),
+        run_config=build_run_config(),
     )
 
     tuner.fit()
