@@ -33,8 +33,7 @@ import os
 import warnings
 
 from ray import tune
-from ray.air.config import CheckpointConfig
-from ray.tune import RunConfig, Tuner, TuneConfig
+from ray.tune import CheckpointConfig, RunConfig, Tuner, TuneConfig
 from ray.tune.schedulers import PopulationBasedTraining
 
 from ray_pbt_train import get_default_pbt_config, train_lunarlander_pbt
@@ -129,10 +128,10 @@ def main() -> None:
     static = get_default_pbt_config()
     pbt_cfg = static["pbt"]
 
+    # metric/mode only on TuneConfig — PBT also accepts them on the scheduler, but then
+    # tune.run would receive duplicate metric/mode and raise ValueError (Ray 2.5+).
     pbt = PopulationBasedTraining(
         time_attr="training_iteration",
-        metric=pbt_cfg["metric"],
-        mode=pbt_cfg["mode"],
         perturbation_interval=int(pbt_cfg["perturbation_interval"]),
         burn_in_period=int(pbt_cfg["burn_in_period"]),
         hyperparam_mutations=_hyperparam_mutations(),
@@ -153,8 +152,8 @@ def main() -> None:
         trainable,
         param_space=param_space,
         tune_config=TuneConfig(
-            mode=pbt_cfg["mode"],
             metric=pbt_cfg["metric"],
+            mode=pbt_cfg["mode"],
             scheduler=pbt,
             num_samples=num_samples,
         ),
