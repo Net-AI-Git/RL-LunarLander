@@ -11,7 +11,7 @@
 #   !pip3 install pyvirtualdisplay  # duplicate — omitted here
 #
 # Usage:
-#   chmod +x setup_env.sh && ./setup_env.sh
+#   cd /workspace/RL-LunarLander && chmod +x setup_env.sh && ./setup_env.sh
 # Skip apt: SKIP_SYSTEM=1 ./setup_env.sh
 
 set -euo pipefail
@@ -58,7 +58,8 @@ echo "==> Pip: this repo + notebooks (Hub upload, plots, Jupyter kernel — not 
 "${PIP}" install \
   huggingface_hub \
   matplotlib \
-  ipykernel
+  ipykernel \
+  "ray[tune]"
 
 # Register Jupyter / Cursor kernel (needs ipykernel above)
 "${PY}" -m ipykernel install --user \

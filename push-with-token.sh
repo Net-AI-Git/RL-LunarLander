@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
-# Push the **current branch** to GitHub using a Personal Access Token (prompted each run — not stored).
+# Store GitHub HTTPS credentials in memory (git credential cache) so later `git push` / `git pull`
+# work without embedding the token in the remote URL. Does not fetch, pull, or push.
 # Usage: ./push-with-token.sh
-# Requires: git, checked-out branch (not detached HEAD), remote repo Net-AI-Git/RL-LunarLander
+# Token is prompted once per run; use when the cache expired or after reboot.
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-REPO_PATH="Net-AI-Git/RL-LunarLander"
-# GitHub user/org for HTTPS (same as repo owner).
 GITHUB_USER="Net-AI-Git"
 
-CURRENT_BRANCH="$(git branch --show-current || true)"
-if [[ -z "${CURRENT_BRANCH}" ]]; then
-  echo "Error: not on a named branch (detached HEAD). Run: git checkout <branch>" >&2
+_origin="$(git remote get-url origin 2>/dev/null || true)"
+if [[ -z "${_origin}" ]]; then
+  echo "Error: no remote named origin." >&2
   exit 1
 fi
 
-echo "Pushing branch '${CURRENT_BRANCH}' to ${REPO_PATH} as ${GITHUB_USER} (token is hidden while typing)."
+if [[ "${_origin}" =~ ^git@github\.com: ]]; then
+  echo "Error: origin uses SSH (${_origin}). This script stores HTTPS credentials." >&2
+  echo "Use an HTTPS remote, e.g.: git remote set-url origin https://github.com/OWNER/REPO.git" >&2
+  exit 1
+fi
+
+REPO_PATH=""
+if [[ "${_origin}" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
+  REPO_PATH="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+fi
+unset _origin
+
+# Memory-only cache for this repo (default 8h). Does not write the token to .git in clear text.
+if ! git config --local --get credential.helper >/dev/null 2>&1; then
+  git config --local credential.helper 'cache --timeout=28800'
+fi
+
+echo "GitHub HTTPS login for ${REPO_PATH:-github.com} as ${GITHUB_USER} (token hidden while typing)."
+echo "Nothing will be fetched or pushed — only credentials are stored for later git commands."
 read -r -s -p "Personal access token: " TOKEN
 echo ""
 
@@ -25,13 +42,9 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-# One-shot authenticated URL (token not written to disk). If your token has special
-# characters (@, :, #, etc.), use a new token without them or URL-encode them.
-AUTH_URL="https://${GITHUB_USER}:${TOKEN}@github.com/${REPO_PATH}.git"
+printf 'protocol=https\nhost=github.com\nusername=%s\npassword=%s\n\n' "${GITHUB_USER}" "${TOKEN}" | git credential approve
 
 TOKEN=""
 unset TOKEN
 
-git push "${AUTH_URL}" "HEAD:refs/heads/${CURRENT_BRANCH}"
-
-echo "Done."
+echo "Credentials cached in memory for this clone. When you want, run e.g.: git push origin <branch>"
