@@ -1,0 +1,54 @@
+{
+  "timesteps_done": 5963776,
+  "seed": 289082777,
+  "current_config": {
+    "base": {
+      "train_device": "cpu",
+      "n_envs": 16,
+      "total_timesteps": 8000000,
+      "n_steps": 1024,
+      "batch_size": 512,
+      "n_epochs": 6,
+      "gamma": 0.995,
+      "gae_lambda": 0.98,
+      "clip_range": 0.15,
+      "clip_range_vf": null,
+      "normalize_advantage": true,
+      "vf_coef": 0.4,
+      "max_grad_norm": 0.7,
+      "target_kl": 0.02,
+      "use_sde": false,
+      "learning_rate": 0.00024,
+      "lr_end": 5e-05,
+      "ent_coef": 0.005950088276162791,
+      "ent_coef_end": 0.001,
+      "schedule_flat_until": 0.2,
+      "periodic_eval_episodes": 10,
+      "vecnormalize_clip_obs": 10.0,
+      "vecnormalize_clip_reward": 10.0
+    },
+    "fixed_policy_kwargs": {
+      "pi": [
+        256,
+        256
+      ],
+      "vf": [
+        512,
+        512
+      ],
+      "activation_fn": "tanh",
+      "ortho_init": true
+    },
+    "pbt": {
+      "metric": "eval_score",
+      "mode": "max",
+      "num_samples": 16,
+      "report_interval_timesteps": 200000,
+      "perturbation_interval": 2,
+      "burn_in_period": 4,
+      "resample_probability": 0.25,
+      "quantile_fraction": 0.25
+    }
+  },
+  "best_eval_score_so_far": 293.7662036266891
+}
