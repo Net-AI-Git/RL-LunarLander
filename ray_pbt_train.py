@@ -15,26 +15,28 @@ import os
 import shutil
 import tempfile
 import types
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
 import numpy as np
 import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.vec_env import VecNormalize
 
 from lunar_rl_common import (
     DEFAULT_ENV_ID,
+    DEFAULT_EVAL_SEEDS,
     EntropyCoefScheduleCallback,
     PeriodicEvalCallback,
     VecNormalizeSaveCallback,
+    disjoint_train_seed,
     make_ent_coef_schedule_late_linear,
     make_ppo_lr_schedule_late_linear,
     make_subproc_venv,
     make_train_vec_env,
-    make_eval_vec_env_synced,
+    multiseed_evaluate_policy,
+    multiseed_evaluate_with_lunar_diagnostics,
     policy_kwargs as default_policy_kwargs,
     resolve_train_device,
 )
@@ -57,6 +59,7 @@ _REPORT_METRIC_HP_KEYS = (
     "target_kl",
     "clip_range",
     "max_grad_norm",
+    "policy_arch",
 )
 
 
@@ -225,6 +228,8 @@ def merge_pbt_config(
         "ent_coef_end",
         "schedule_flat_until",
         "periodic_eval_episodes",
+        "eval_seeds",
+        "posthoc_eval_seeds",
         "vecnormalize_clip_obs",
         "vecnormalize_clip_reward",
     }
@@ -244,10 +249,42 @@ def merge_pbt_config(
     return out
 
 
+def _eval_seeds_from_base(base: Mapping[str, Any]) -> tuple[int, ...]:
+    raw = base.get("eval_seeds")
+    if raw is None:
+        return DEFAULT_EVAL_SEEDS
+    return tuple(int(x) for x in raw)
+
+
+def apply_policy_arch_to_merged(
+    static_cfg: Mapping[str, Any],
+    merged: MutableMapping[str, Any],
+    arch_index: int,
+) -> None:
+    """
+    Set ``merged[\"fixed_policy_kwargs\"]`` from ``static_cfg[\"architecture_presets\"]``
+    when present, and always record ``merged[\"base\"][\"policy_arch\"]`` for Tune metrics.
+    Not used for PBT mutations (architecture is fixed after trial init / checkpoint lineage).
+    """
+    merged.setdefault("base", {})["policy_arch"] = float(arch_index)
+    presets = static_cfg.get("architecture_presets")
+    if not isinstance(presets, list) or len(presets) == 0:
+        return
+    if arch_index < 0 or arch_index >= len(presets):
+        raise ValueError(
+            f"policy_arch {arch_index} out of range for architecture_presets (len={len(presets)})"
+        )
+    fp = dict(static_cfg.get("fixed_policy_kwargs") or {})
+    p = presets[arch_index]
+    fp["pi"] = list(p["pi"])
+    fp["vf"] = list(p["vf"])
+    merged["fixed_policy_kwargs"] = fp
+
+
 def build_model_and_env(
     config: Mapping[str, Any],
     *,
-    seed: int,
+    train_seed: int,
     checkpoint_dir: str,
     env_id: str | None = None,
 ) -> tuple[PPO, VecNormalize, list[BaseCallback]]:
@@ -259,6 +296,8 @@ def build_model_and_env(
     """
     b = config["base"]
     env_id = env_id or DEFAULT_ENV_ID
+    eval_seeds = _eval_seeds_from_base(b)
+    seed = int(train_seed)
     device = resolve_train_device(str(b.get("train_device", "cpu")))
     policy_kwargs = policy_kwargs_from_fixed(config.get("fixed_policy_kwargs"))
 
@@ -316,8 +355,8 @@ def build_model_and_env(
         VecNormalizeSaveCallback(save_freq=interval, save_path=vec_path),
         PeriodicEvalCallback(
             eval_freq=interval,
-            n_eval_episodes=int(b["periodic_eval_episodes"]),
-            seed=seed,
+            n_eval_episodes_per_seed=int(b["periodic_eval_episodes"]),
+            eval_seeds=eval_seeds,
             csv_path=csv_path,
             env_id=env_id,
         ),
@@ -328,7 +367,7 @@ def build_model_and_env(
 def build_model_and_env_chunked(
     config: Mapping[str, Any],
     *,
-    seed: int,
+    train_seed: int,
     env_id: str | None = None,
 ) -> tuple[PPO, VecNormalize, EntropyCoefGlobalScheduleCallback]:
     """
@@ -337,6 +376,7 @@ def build_model_and_env_chunked(
     """
     b = config["base"]
     env_id = env_id or DEFAULT_ENV_ID
+    seed = int(train_seed)
     device = resolve_train_device(str(b.get("train_device", "cpu")))
     policy_kwargs = policy_kwargs_from_fixed(config.get("fixed_policy_kwargs"))
     total_ts = int(b["total_timesteps"])
@@ -396,27 +436,49 @@ def build_model_and_env_chunked(
 def evaluate_current_model(
     model: PPO,
     train_venv: VecNormalize,
-    seed: int,
-    n_eval_episodes: int,
+    base: Mapping[str, Any],
     env_id: str | None = None,
-) -> tuple[float, float, float]:
+    *,
+    return_diagnostics: bool = False,
+    eval_seeds_override: Sequence[int] | None = None,
+    n_eval_episodes_per_seed: int | None = None,
+) -> tuple[float, float, float] | tuple[float, float, float, dict[str, float]]:
     """
-    Synced eval env, deterministic policy; returns
-    ``(eval_mean_reward, eval_std_reward, eval_score)`` with ``eval_score = mean - std``.
+    Held-out eval: ``len(seeds) * n_eval_episodes_per_seed`` episodes (separate env per seed,
+    synced VecNormalize obs stats from training). Returns
+    ``(eval_mean_reward, eval_std_reward, eval_score)`` with ``eval_score = mean - std`` over
+    the pooled episode returns.
+    With ``return_diagnostics=True``, also returns LunarLander success/timeout/crash rates and
+    fuel proxy (same rollout path as ``multiseed_evaluate_with_lunar_diagnostics``).
     """
-    eval_env = make_eval_vec_env_synced(train_venv, seed, env_id=env_id)
-    try:
-        mean_r, std_r = evaluate_policy(
+    b = base
+    seeds = (
+        _eval_seeds_from_base(b)
+        if eval_seeds_override is None
+        else tuple(int(x) for x in eval_seeds_override)
+    )
+    n_per = int(b["periodic_eval_episodes"]) if n_eval_episodes_per_seed is None else int(
+        n_eval_episodes_per_seed
+    )
+    if return_diagnostics:
+        mean_f, std_f, score, diag = multiseed_evaluate_with_lunar_diagnostics(
             model,
-            eval_env,
-            n_eval_episodes=n_eval_episodes,
+            train_venv,
+            seeds,
+            n_per,
+            env_id=env_id,
             deterministic=True,
         )
-        mean_f = float(mean_r)
-        std_f = float(std_r)
-        return mean_f, std_f, mean_f - std_f
-    finally:
-        eval_env.close()
+        return mean_f, std_f, score, diag
+    mean_f, std_f, score = multiseed_evaluate_policy(
+        model,
+        train_venv,
+        seeds,
+        n_per,
+        env_id=env_id,
+        deterministic=True,
+    )
+    return mean_f, std_f, score
 
 
 def save_trial_checkpoint(
@@ -551,9 +613,12 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
             )
     else:
         merged = merge_pbt_config(static, config)
-        seed = int(config.get("seed", 42))
+        if config.get("policy_arch") is not None:
+            apply_policy_arch_to_merged(static, merged, int(config["policy_arch"]))
+        eval_seeds = _eval_seeds_from_base(merged["base"])
+        seed = disjoint_train_seed(int(config.get("seed", 42)), eval_seeds)
         model, train_env, ent_cb = build_model_and_env_chunked(
-            merged, seed=seed, env_id=env_id
+            merged, train_seed=seed, env_id=env_id
         )
         timesteps_done = int(model.num_timesteps)
         best_eval = None
@@ -561,7 +626,6 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     base = merged["base"]
     total_timesteps = int(base["total_timesteps"])
     report_interval = _report_interval_timesteps(merged)
-    n_eval_episodes = int(base["periodic_eval_episodes"])
 
     while timesteps_done < total_timesteps:
         apply_schedules_from_base(
@@ -584,12 +648,12 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
         )
         timesteps_done = int(model.num_timesteps)
 
-        mean_r, std_r, eval_score = evaluate_current_model(
+        mean_r, std_r, eval_score, eval_diag = evaluate_current_model(
             model,
             train_env,
-            seed,
-            n_eval_episodes,
+            base,
             env_id=env_id,
+            return_diagnostics=True,
         )
         if best_eval is None:
             best_eval = eval_score
@@ -613,6 +677,7 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
                 "eval_score": eval_score,
                 "timesteps_done": timesteps_done,
             }
+            report_metrics.update(eval_diag)
             report_metrics.update(hp_metrics_from_merged(merged))
             tune.report(
                 report_metrics,

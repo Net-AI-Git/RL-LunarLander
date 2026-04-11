@@ -72,8 +72,8 @@ def main() -> int:
         # Trigger at least one eval during short run (eval_freq small)
         eval_cb = PeriodicEvalCallback(
             eval_freq=2048,
-            n_eval_episodes=2,
-            seed=seed,
+            n_eval_episodes_per_seed=2,
+            eval_seeds=(101,),  # smoke: one seed; PBT uses DEFAULT_EVAL_SEEDS (5)
             csv_path=csv_path,
             env_id=env_id,
         )

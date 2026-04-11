@@ -6,7 +6,8 @@ import copy
 import csv
 import os
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 import gymnasium as gym
 import matplotlib.pyplot as plt
@@ -21,6 +22,27 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNorm
 from stable_baselines3.common.vec_env import unwrap_vec_normalize
 
 DEFAULT_ENV_ID = "LunarLander-v3"
+
+# Fixed held-out seeds for periodic / PBT eval (same list for every trial). Must not overlap train seeds.
+DEFAULT_EVAL_SEEDS: tuple[int, ...] = (101, 202, 303, 404, 505)
+
+# Post-hoc winner selection only: disjoint from ``DEFAULT_EVAL_SEEDS`` and from Tune train seeds in practice.
+DEFAULT_POSTHOC_EVAL_SEEDS: tuple[int, ...] = tuple(range(1001, 1011))
+
+# Gymnasium LunarLander: environment is "solved" at mean return >= 200 over many episodes; per-episode success proxy.
+LUNAR_SUCCESS_RETURN_THRESHOLD: float = 200.0
+
+
+def disjoint_train_seed(seed: int, eval_seeds: Sequence[int]) -> int:
+    """
+    Ensure the training RNG base does not collide with any eval seed (SubprocVecEnv uses
+    ``seed + rank``; the base ``seed`` itself should still differ from eval seeds).
+    """
+    s = int(seed)
+    blocked = {int(x) for x in eval_seeds}
+    while s in blocked:
+        s += 1
+    return s
 
 
 def suggested_parallel_envs(
@@ -173,6 +195,196 @@ def make_eval_vec_env_synced(
     return ev
 
 
+def multiseed_evaluate_policy(
+    model,
+    train_venv: VecNormalize,
+    eval_seeds: Sequence[int],
+    n_eval_episodes_per_seed: int,
+    env_id: str | None = None,
+    deterministic: bool = True,
+) -> tuple[float, float, float]:
+    """
+    Separate eval env per seed (synced obs stats from ``train_venv`` each time), never the train env.
+    Pools ``len(eval_seeds) * n_eval_episodes_per_seed`` episode returns and returns
+    ``(mean, std, mean - std)`` over that pool (same convention as ``evaluate_policy`` std).
+    """
+    all_returns: list[float] = []
+    for es in eval_seeds:
+        eval_env = make_eval_vec_env_synced(train_venv, int(es), env_id=env_id)
+        try:
+            out = evaluate_policy(
+                model,
+                eval_env,
+                n_eval_episodes=int(n_eval_episodes_per_seed),
+                deterministic=deterministic,
+                return_episode_rewards=True,
+            )
+            if isinstance(out, tuple) and len(out) == 3:
+                _, _, ep_rews = out
+                all_returns.extend(np.asarray(ep_rews, dtype=np.float64).flatten().tolist())
+            else:
+                raise RuntimeError(
+                    "evaluate_policy(..., return_episode_rewards=True) must return "
+                    "(mean, std, episode_rewards); upgrade stable-baselines3 if needed."
+                )
+        finally:
+            eval_env.close()
+    arr = np.asarray(all_returns, dtype=np.float64)
+    if arr.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    mean_f = float(np.mean(arr))
+    std_f = float(np.std(arr))
+    return mean_f, std_f, mean_f - std_f
+
+
+def lunar_discrete_engine_steps(action: np.ndarray | int | float) -> int:
+    """
+    Fuel proxy for ``Discrete(4)`` LunarLander: count steps where any engine fires
+    (actions 1=left, 2=main, 3=right). ``0`` is noop.
+    """
+    a = np.asarray(action).reshape(-1)
+    act_i = int(a[0])
+    return 1 if act_i in (1, 2, 3) else 0
+
+
+def _vecenv_step_returns_tuple(
+    rewards: np.ndarray | Sequence[float],
+    dones: np.ndarray | Sequence[bool],
+    infos: list[dict] | tuple[dict, ...],
+) -> tuple[float, bool, dict]:
+    info0: dict = infos[0] if isinstance(infos, (list, tuple)) and infos else {}
+    return float(np.asarray(rewards).reshape(-1)[0]), bool(
+        np.asarray(dones).reshape(-1)[0]
+    ), info0
+
+
+def _terminal_truncated(info: dict) -> bool:
+    """Best-effort Gymnasium TimeLimit / SB3 vec-env terminal info."""
+    if not isinstance(info, dict):
+        return False
+    if info.get("TimeLimit.truncated") is True:
+        return True
+    # Some stacks nest or use string keys inconsistently
+    inner = info.get("episode")
+    if isinstance(inner, dict) and inner.get("TimeLimit.truncated") is True:
+        return True
+    return False
+
+
+def _rollout_lunar_episodes_vecnormalize(
+    model,
+    eval_env: VecNormalize,
+    n_episodes: int,
+    *,
+    deterministic: bool = True,
+) -> tuple[list[float], list[int], list[str]]:
+    """
+    Run ``n_episodes`` on a single-subprocess VecEnv (``n_envs=1``), classifying each episode.
+
+    Categories are mutually exclusive: ``success`` (return >= ``LUNAR_SUCCESS_RETURN_THRESHOLD``),
+    ``timeout`` (truncated time limit), else ``crash`` (terminal failure / bad landing not timed out).
+    """
+    returns: list[float] = []
+    fuel_steps: list[int] = []
+    labels: list[str] = []
+
+    obs = eval_env.reset()
+    if isinstance(obs, tuple):
+        obs = obs[0]
+
+    completed = 0
+    ep_return = 0.0
+    ep_fuel = 0
+
+    while completed < int(n_episodes):
+        action, _ = model.predict(obs, deterministic=deterministic)
+        new_obs, rewards, dones, infos = eval_env.step(action)
+        r, d, info0 = _vecenv_step_returns_tuple(rewards, dones, infos)
+        ep_return += r
+        ep_fuel += lunar_discrete_engine_steps(action)
+        obs = new_obs
+        if d:
+            truncated = _terminal_truncated(info0)
+            if ep_return >= LUNAR_SUCCESS_RETURN_THRESHOLD:
+                labels.append("success")
+            elif truncated:
+                labels.append("timeout")
+            else:
+                labels.append("crash")
+            returns.append(ep_return)
+            fuel_steps.append(ep_fuel)
+            completed += 1
+            ep_return = 0.0
+            ep_fuel = 0
+
+    return returns, fuel_steps, labels
+
+
+def multiseed_evaluate_with_lunar_diagnostics(
+    model,
+    train_venv: VecNormalize,
+    eval_seeds: Sequence[int],
+    n_eval_episodes_per_seed: int,
+    env_id: str | None = None,
+    deterministic: bool = True,
+) -> tuple[float, float, float, dict[str, float]]:
+    """
+    Same pooling as ``multiseed_evaluate_policy``, plus per-episode LunarLander diagnostics.
+
+    Returns ``(mean, std, mean - std, metrics)`` where ``metrics`` contains rates in ``[0, 1]``
+    and ``mean_fuel_proxy`` (average engine-firing steps per episode over the pool).
+    """
+    all_returns: list[float] = []
+    all_labels: list[str] = []
+    all_fuel: list[int] = []
+
+    for es in eval_seeds:
+        eval_env = make_eval_vec_env_synced(train_venv, int(es), env_id=env_id)
+        try:
+            rets, fuels, labels = _rollout_lunar_episodes_vecnormalize(
+                model,
+                eval_env,
+                int(n_eval_episodes_per_seed),
+                deterministic=deterministic,
+            )
+            all_returns.extend(rets)
+            all_labels.extend(labels)
+            all_fuel.extend(fuels)
+        finally:
+            eval_env.close()
+
+    arr = np.asarray(all_returns, dtype=np.float64)
+    if arr.size == 0:
+        nan = float("nan")
+        return nan, nan, nan, {
+            "eval_success_rate": nan,
+            "eval_timeout_rate": nan,
+            "eval_crash_rate": nan,
+            "eval_mean_fuel_proxy": nan,
+        }
+
+    mean_f = float(np.mean(arr))
+    std_f = float(np.std(arr))
+    n = float(len(all_labels))
+    n_succ = sum(1 for x in all_labels if x == "success")
+    n_time = sum(1 for x in all_labels if x == "timeout")
+    n_crash = sum(1 for x in all_labels if x == "crash")
+    metrics = {
+        "eval_success_rate": n_succ / n,
+        "eval_timeout_rate": n_time / n,
+        "eval_crash_rate": n_crash / n,
+        "eval_mean_fuel_proxy": float(np.mean(all_fuel)) if all_fuel else float("nan"),
+    }
+    return mean_f, std_f, mean_f - std_f, metrics
+
+
+def posthoc_eval_seeds_from_base(base: Mapping[str, Any]) -> tuple[int, ...]:
+    raw = base.get("posthoc_eval_seeds")
+    if raw is None:
+        return DEFAULT_POSTHOC_EVAL_SEEDS
+    return tuple(int(x) for x in raw)
+
+
 def make_ppo_lr_schedule(
     lr_start: float, lr_end_factor: float = 0.05, lr_floor: float = 1e-5
 ) -> FloatSchedule:
@@ -278,20 +490,20 @@ class PeriodicEvalCallback(BaseCallback):
     Periodic **held-out** evaluation during training:
 
     1. Take the current training ``VecNormalize`` stats (``get_train_vec_normalize``).
-    2. Build a **single-env** eval stack via ``make_eval_vec_env_synced`` — same Box obs,
-       same obs normalization as training, ``norm_reward=False``, ``training=False``.
-    3. Run Stable-Baselines3 ``evaluate_policy`` for ``n_eval_episodes`` (default 10),
-       **deterministic** actions, and record ``mean_reward`` and ``std_reward`` (std across
-       those episode returns). Rows are appended to ``csv_path`` and ``eval_history``.
+    2. For each eval seed, build a **separate** single-env stack via ``make_eval_vec_env_synced``
+       (never the training env): same obs norm as training, ``norm_reward=False``, ``training=False``.
+    3. Run ``multiseed_evaluate_policy``: ``len(eval_seeds) * n_eval_episodes_per_seed`` episodes
+       total (e.g. 5×10=50), **deterministic** actions, and record pooled ``mean_reward`` /
+       ``std_reward`` across all those episode returns. Rows go to ``csv_path`` and ``eval_history``.
 
-    This matches the notebook / Hub eval path (synced normalization, no reward clipping in eval).
+    Train RNG uses ``train_seed``; eval uses fixed ``eval_seeds`` only — no overlap.
     """
 
     def __init__(
         self,
         eval_freq: int,
-        n_eval_episodes: int,
-        seed: int,
+        n_eval_episodes_per_seed: int,
+        eval_seeds: Sequence[int],
         csv_path: str = "logs/periodic_eval.csv",
         env_id: str | None = None,
         deterministic: bool = True,
@@ -299,8 +511,8 @@ class PeriodicEvalCallback(BaseCallback):
     ):
         super().__init__(verbose)
         self.eval_freq = eval_freq
-        self.n_eval_episodes = n_eval_episodes
-        self.seed = seed
+        self.n_eval_episodes_per_seed = int(n_eval_episodes_per_seed)
+        self.eval_seeds = tuple(int(s) for s in eval_seeds)
         self.csv_path = csv_path
         self.env_id = env_id
         self.deterministic = deterministic
@@ -312,7 +524,7 @@ class PeriodicEvalCallback(BaseCallback):
         timesteps: int,
         mean_reward: float,
         std_reward: float,
-        n_episodes: int,
+        total_eval_episodes: int,
     ) -> None:
         d = os.path.dirname(self.csv_path)
         if d:
@@ -326,8 +538,9 @@ class PeriodicEvalCallback(BaseCallback):
                         "timesteps",
                         "mean_reward",
                         "std_reward",
-                        "n_episodes",
-                        "n_eval_episodes",
+                        "total_eval_episodes",
+                        "n_eval_episodes_per_seed",
+                        "n_eval_seeds",
                     ]
                 )
             w.writerow(
@@ -335,8 +548,9 @@ class PeriodicEvalCallback(BaseCallback):
                     timesteps,
                     mean_reward,
                     std_reward,
-                    n_episodes,
-                    self.n_eval_episodes,
+                    total_eval_episodes,
+                    self.n_eval_episodes_per_seed,
+                    len(self.eval_seeds),
                 ]
             )
         self.eval_history.append(
@@ -344,7 +558,7 @@ class PeriodicEvalCallback(BaseCallback):
                 "timesteps": timesteps,
                 "mean_reward": mean_reward,
                 "std_reward": std_reward,
-                "n_episodes": n_episodes,
+                "n_episodes": total_eval_episodes,
             }
         )
 
@@ -354,22 +568,21 @@ class PeriodicEvalCallback(BaseCallback):
             warnings.warn("PeriodicEvalCallback: training env is not VecNormalize; skip.")
             return
 
-        eval_env = make_eval_vec_env_synced(train_vn, self.seed, self.env_id)
-        try:
-            mean_r, std_r = evaluate_policy(
-                self.model,
-                eval_env,
-                n_eval_episodes=self.n_eval_episodes,
-                deterministic=self.deterministic,
-            )
-            self._write_row(
-                self.num_timesteps,
-                float(mean_r),
-                float(std_r),
-                self.n_eval_episodes,
-            )
-        finally:
-            eval_env.close()
+        mean_r, std_r, _score = multiseed_evaluate_policy(
+            self.model,
+            train_vn,
+            self.eval_seeds,
+            self.n_eval_episodes_per_seed,
+            env_id=self.env_id,
+            deterministic=self.deterministic,
+        )
+        total_eps = len(self.eval_seeds) * self.n_eval_episodes_per_seed
+        self._write_row(
+            self.num_timesteps,
+            float(mean_r),
+            float(std_r),
+            total_eps,
+        )
 
     def _on_step(self) -> bool:
         if self.num_timesteps - self._last_eval_at >= self.eval_freq:

@@ -1,7 +1,7 @@
 {
   "base": {
     "train_device": "cpu",
-    "n_envs": 16,
+    "n_envs": 28,
     "total_timesteps": 8000000,
     "n_steps": 1024,
     "batch_size": 512,
@@ -21,9 +21,17 @@
     "ent_coef_end": 0.002,
     "schedule_flat_until": 0.25,
     "periodic_eval_episodes": 10,
+    "eval_seeds": [101, 202, 303, 404, 505],
+    "posthoc_eval_seeds": [1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010],
     "vecnormalize_clip_obs": 10.0,
     "vecnormalize_clip_reward": 10.0
   },
+  "architecture_presets": [
+    { "pi": [128, 128], "vf": [256, 256] },
+    { "pi": [256, 256], "vf": [512, 512] },
+    { "pi": [256, 256, 256], "vf": [512, 512, 512] },
+    { "pi": [512, 512], "vf": [1024, 1024] }
+  ],
   "fixed_policy_kwargs": {
     "pi": [256, 256],
     "vf": [512, 512],

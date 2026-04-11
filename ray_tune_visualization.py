@@ -2,8 +2,10 @@
 """
 Automatic Ray Tune / PBT result visualization: progress plots, comparisons, CSV/JSON summary.
 
-Called from ``TuneVisualizationCallback`` after each trial and at experiment end, and
-optionally once more from the launcher after ``Tuner.fit()``.
+``TuneVisualizationCallback`` refreshes ``visualizations/`` on **each** ``tune.report``
+(``on_trial_result``) so plots update during long runs — not only when a trial finishes.
+Optional wall-clock throttling avoids regenerating all figures on every simultaneous report.
+The launcher may call ``refresh_tune_visualizations`` again after ``Tuner.fit()``.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import json
 import logging
 import os
 import re
+import time
 import warnings
 from pathlib import Path
 from typing import Any, Optional
@@ -42,6 +45,7 @@ HP_TRACK_KEYS = (
     "target_kl",
     "clip_range",
     "max_grad_norm",
+    "policy_arch",
 )
 
 HP_EVOLUTION_PLOT_KEYS = ("learning_rate", "ent_coef", "vf_coef", "target_kl")
@@ -125,6 +129,9 @@ def _plot_trial_progress(
         ax.axvline(xv, color="gray", linestyle=":", alpha=0.7, linewidth=1)
     ax.set_xlabel(xl)
     ax.set_ylabel("reward / score")
+    ax.set_title(
+        "Training progress: held-out eval (each point = one tune.report after env steps)"
+    )
     ax.legend(loc="best")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -148,7 +155,10 @@ def _plot_trial_progress(
                 fig_p.add_trace(go.Scatter(x=xs, y=df["eval_score"], name="eval_score"))
             for xv in perturbation_xs:
                 fig_p.add_vline(x=xv, line_dash="dot", line_color="gray", opacity=0.6)
-            fig_p.update_layout(title="Trial progress", xaxis_title=xl)
+            fig_p.update_layout(
+                title="Training progress: held-out eval vs timesteps",
+                xaxis_title=xl,
+            )
             fig_p.write_html(str(out_html))
         except ImportError:
             pass
@@ -458,7 +468,11 @@ def print_and_save_run_summary(
 
 def _experiment_path_from_trial(trial: Any) -> Optional[str]:
     try:
-        lp = getattr(trial, "local_path", None) or getattr(trial, "logdir", None)
+        lp = (
+            getattr(trial, "local_path", None)
+            or getattr(trial, "path", None)
+            or getattr(trial, "logdir", None)
+        )
         if lp:
             return str(Path(lp).resolve().parent)
     except Exception:
@@ -477,7 +491,11 @@ def _experiment_path_from_trial(trial: Any) -> Optional[str]:
 
 
 class TuneVisualizationCallback(Callback):
-    """Refresh visualization folder after each trial completes and when the experiment ends."""
+    """
+    Refresh ``visualizations/`` after each reported result (``on_trial_result``), when a
+    trial completes, and at experiment end. Without ``on_trial_result``, PBT runs would only
+    update plots after trials terminate (often never until the full run ends).
+    """
 
     def __init__(
         self,
@@ -486,12 +504,37 @@ class TuneVisualizationCallback(Callback):
         mode: str = DEFAULT_MODE,
         top_k: int = DEFAULT_TOP_K,
         output_subdir: str = OUTPUT_SUBDIR,
+        min_interval_seconds: float = 5.0,
     ) -> None:
         super().__init__()
         self.metric = metric
         self.mode = mode
         self.top_k = top_k
         self.output_subdir = output_subdir
+        self.min_interval_seconds = float(min_interval_seconds)
+        self._last_refresh_ts: float = 0.0
+
+    def _should_skip_refresh_due_to_throttle(self) -> bool:
+        """Skip refresh if called too often (many parallel trials report together)."""
+        if self.min_interval_seconds <= 0:
+            return False
+        now = time.monotonic()
+        if now - self._last_refresh_ts < self.min_interval_seconds:
+            return True
+        self._last_refresh_ts = now
+        return False
+
+    def on_trial_result(
+        self,
+        iteration: int,
+        trials: list,
+        trial: Any,
+        result: dict,
+        **info: Any,
+    ) -> None:
+        if self._should_skip_refresh_due_to_throttle():
+            return
+        self._refresh(trial, with_summary=False)
 
     def _refresh(self, trial: Any, *, with_summary: bool) -> None:
         exp_path = _experiment_path_from_trial(trial)
@@ -519,6 +562,7 @@ class TuneVisualizationCallback(Callback):
     def on_trial_complete(
         self, iteration: int, trials: list, trial, **info
     ) -> None:
+        self._last_refresh_ts = time.monotonic()
         self._refresh(trial, with_summary=False)
 
     def on_experiment_end(self, trials: list, **info) -> None:
