@@ -666,6 +666,8 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     report_interval = _report_interval_timesteps(merged)
     n_eval_episodes = int(base["periodic_eval_episodes"])
 
+    reported = False
+
     while timesteps_done < total_timesteps:
         apply_schedules_from_base(
             model,
@@ -711,6 +713,57 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
             )
             # Tune increments ``training_iteration`` each report (PBT time_attr).
             report_metrics: dict[str, Any] = {
+                "eval_mean_reward": mean_r,
+                "eval_std_reward": std_r,
+                "eval_score": eval_score,
+                "timesteps_done": timesteps_done,
+            }
+            report_metrics.update(hp_metrics_from_merged(merged))
+            tune.report(
+                report_metrics,
+                checkpoint=Checkpoint.from_directory(ckpt_dir),
+            )
+            reported = True
+        finally:
+            shutil.rmtree(ckpt_dir, ignore_errors=True)
+
+    # If ``total_timesteps`` is not above the loaded checkpoint's timesteps, the loop runs zero
+    # times — Ray Tune still requires at least one ``tune.report`` containing ``eval_score``.
+    if not reported:
+        warnings.warn(
+            f"No training steps ran: timesteps_done={timesteps_done} >= total_timesteps={total_timesteps}. "
+            "Raise base.total_timesteps above the checkpoint to continue training.",
+            UserWarning,
+            stacklevel=1,
+        )
+        apply_schedules_from_base(
+            model,
+            ent_cb,
+            base,
+            global_total_timesteps=total_timesteps,
+        )
+        mean_r, std_r, eval_score = evaluate_current_model(
+            model,
+            train_env,
+            seed,
+            n_eval_episodes,
+            env_id=env_id,
+        )
+        if best_eval is None:
+            best_eval = eval_score
+        else:
+            best_eval = max(best_eval, eval_score)
+        ckpt_dir = tempfile.mkdtemp(prefix="lunarlander_tune_ckpt_")
+        try:
+            save_trial_checkpoint(
+                ckpt_dir,
+                model,
+                train_env,
+                seed=seed,
+                current_config=merged,
+                best_eval_score_so_far=best_eval,
+            )
+            report_metrics = {
                 "eval_mean_reward": mean_r,
                 "eval_std_reward": std_r,
                 "eval_score": eval_score,

@@ -2,7 +2,7 @@
   "base": {
     "train_device": "cpu",
     "n_envs": 16,
-    "total_timesteps": 4000000,
+    "total_timesteps": 10000000,
     "n_steps": 1024,
     "batch_size": 512,
     "n_epochs": 6,
