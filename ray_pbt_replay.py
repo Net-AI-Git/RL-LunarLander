@@ -11,7 +11,7 @@ Usage::
 
   python ray_pbt_replay.py --policy-file /path/to/pbt_policy_....txt
 
-Optional: ``RAY_RESULTS_DIR``, ``RAY_PBT_CHECKPOINTS_TO_KEEP``, ``RAY_PBT_CPUS`` — same as the main launcher.
+Optional: ``RAY_RESULTS_DIR``, ``RAY_PBT_CHECKPOINTS_TO_KEEP``, ``RAY_PBT_CPUS``, ``RAY_PBT_GPU_FRACTION`` — same as the main launcher.
 Experiment name: ``--experiment-name`` or env ``RAY_PBT_REPLAY_NAME`` (default ``lunarlander_pbt_replay``).
 """
 
@@ -25,7 +25,7 @@ from ray import tune
 from ray.tune import Tuner, TuneConfig
 from ray.tune.schedulers import PopulationBasedTrainingReplay
 
-from ray_pbt_launcher import _DEFAULT_CPUS, build_run_config, initial_param_space
+from ray_pbt_launcher import build_run_config, initial_param_space, trainable_resources
 from ray_pbt_train import get_default_pbt_config, train_lunarlander_pbt
 from ray_tune_visualization import print_and_save_run_summary, refresh_tune_visualizations
 
@@ -55,7 +55,7 @@ def main() -> None:
 
     trainable = tune.with_resources(
         train_lunarlander_pbt,
-        resources={"cpu": _DEFAULT_CPUS},
+        resources=trainable_resources(static),
     )
 
     exp_name = args.experiment_name or os.environ.get(

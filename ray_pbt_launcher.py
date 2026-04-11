@@ -9,17 +9,31 @@ Environment (optional):
 
 - ``RAY_RESULTS_DIR`` — root for Tune storage (default: ``./ray_results`` under cwd).
 - ``RAY_PBT_EXPERIMENT_NAME`` — run name (default: ``lunarlander_pbt``).
-- ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: 5).
-- ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** (default: ``16``, aligned with ``base.n_envs``). On a ~256 vCPU machine, ``pbt.num_samples`` 16 uses the cluster fully when all trials run.
+- ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: ``2``;
+  raise if you have plenty of disk).
+- ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** (default: ``base.n_envs``).
+- ``RAY_PBT_GPU_FRACTION`` — when ``base.train_device`` is ``cuda``, GPU per trial (default ``1.0``).
+  On a single GPU (e.g. RTX 3070 8GB), keep ``1.0`` so trials do not share VRAM.
+
+- **Continuation from a saved PBT export** (e.g. ``best_pbt_checkpoints_top5/rank01_...``): set
+  ``pbt.seed_checkpoint_dir`` in ``ray_pbt_config.json`` to a directory containing
+  ``model.zip``, ``vecnormalize.pkl``, and ``trainer_state.json``. Hyperparameters still come from
+  the JSON ``base`` + ``initial_param_space`` (same starting values as a fresh run); only the policy
+  weights and VecNormalize stats are loaded from disk. Override or disable with
+  ``RAY_PBT_SEED_CHECKPOINT`` (absolute or repo-relative path; empty string disables). To train past
+  the checkpoint's timestep count, raise ``base.total_timesteps`` (e.g. add more steps for a second
+  training phase).
 
 If Ray fails to start with ``Timed out waiting for ... gcs_server_port`` (GCS): stop stale Ray
 (``ray stop --force``), remove old sessions under ``/tmp/ray/session_*`` when nothing is running,
 ensure ``/tmp`` is writable and has space; optionally ``export RAY_TMPDIR=/path/to/fast/local/dir``.
+On instances with **small root disks**, point ``RAY_RESULTS_DIR`` at a larger mount so ``ray_results/``
+does not fill the volume.
 
 Report cadence (see ``ray_pbt_config.json`` ``pbt`` + ``base``):
 
 - Each ``tune.report`` is one **training_iteration** after ``report_interval_timesteps`` env steps
-  (default 200_000) and ``periodic_eval_episodes`` eval passes (default 10).
+  (see JSON; wider intervals mean fewer checkpoints on disk) and ``periodic_eval_episodes`` eval passes.
 - ``perturbation_interval=2`` means PBT considers exploit/explore every **2** reports (400K steps
   between perturbation checks).
 - ``burn_in_period=4`` is **4** reports before PBT mutates (~800K steps), reducing checkpoint churn.
@@ -48,9 +62,6 @@ from ray_tune_visualization import (
     print_and_save_run_summary,
     refresh_tune_visualizations,
 )
-
-# SubprocVecEnv: ~1 CPU per env; default matches ``base.n_envs`` in ``ray_pbt_config.json``.
-_DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "16"))
 
 _RESULTS_ROOT = os.environ.get("RAY_RESULTS_DIR")
 _DEFAULT_STORAGE = os.path.join(os.getcwd(), "ray_results")
@@ -91,7 +102,7 @@ def build_run_config(
     """
     name = experiment_name or os.environ.get("RAY_PBT_EXPERIMENT_NAME", "lunarlander_pbt")
     storage = _RESULTS_ROOT if _RESULTS_ROOT else _DEFAULT_STORAGE
-    keep = int(os.environ.get("RAY_PBT_CHECKPOINTS_TO_KEEP", "5"))
+    keep = int(os.environ.get("RAY_PBT_CHECKPOINTS_TO_KEEP", "2"))
     cb = callbacks
     if cb is None:
         cb = [
@@ -130,6 +141,22 @@ def initial_param_space(static: dict) -> dict:
     }
 
 
+def trainable_resources(static: dict) -> dict[str, float]:
+    """
+    CPUs follow ``base.n_envs`` (one SubprocVecEnv worker per env unless overridden).
+
+    When ``base.train_device`` is ``cuda``, request ``gpu`` so Tune does not place multiple trials
+    on the same GPU by default (important for 8GB cards).
+    """
+    n_envs = int(static["base"]["n_envs"])
+    cpus = int(os.environ.get("RAY_PBT_CPUS", str(n_envs)))
+    out: dict[str, float] = {"cpu": float(cpus)}
+    dev = str(static["base"].get("train_device", "cpu")).strip().lower()
+    if dev == "cuda":
+        out["gpu"] = float(os.environ.get("RAY_PBT_GPU_FRACTION", "1.0"))
+    return out
+
+
 def main() -> None:
     # Initialize before Tune so ``tuner.fit`` skips auto-init; dashboard off reduces startup work.
     if not ray.is_initialized():
@@ -155,7 +182,7 @@ def main() -> None:
 
     trainable = tune.with_resources(
         train_lunarlander_pbt,
-        resources={"cpu": _DEFAULT_CPUS},
+        resources=trainable_resources(static),
     )
 
     tuner = Tuner(

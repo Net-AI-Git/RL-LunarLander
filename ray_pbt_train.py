@@ -12,6 +12,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import warnings
 import shutil
 import tempfile
 import types
@@ -454,12 +455,16 @@ def load_trial_checkpoint(
     config: Mapping[str, Any],
     *,
     env_id: str | None = None,
+    override_seed: int | None = None,
 ) -> tuple[PPO, VecNormalize, dict[str, Any]]:
     """
     Load ``model.zip``, ``vecnormalize.pkl``, restore ``timesteps_done`` from ``trainer_state.json``.
 
     Rebuilds a training ``SubprocVecEnv`` + ``VecNormalize`` compatible with the saved stats,
     then ``PPO.load``. Returns ``(model, train_env, state_dict)``.
+
+    ``override_seed``: if set, use for vectorized env creation instead of ``trainer_state.json``
+    (e.g. Ray Tune ``seed`` per trial while sharing the same policy weights).
     """
     state_path = os.path.join(checkpoint_dir, CHECKPOINT_TRAINER_STATE)
     vec_path = os.path.join(checkpoint_dir, CHECKPOINT_VECNORMALIZE)
@@ -473,7 +478,7 @@ def load_trial_checkpoint(
 
     b = config["base"]
     env_id = env_id or DEFAULT_ENV_ID
-    seed = int(state["seed"])
+    seed = int(override_seed) if override_seed is not None else int(state["seed"])
     n_envs = int(b["n_envs"])
 
     raw = make_subproc_venv(n_envs, seed, env_id)
@@ -499,6 +504,68 @@ def get_default_pbt_config() -> dict[str, Any]:
     return load_ray_pbt_config(_DEFAULT_CONFIG_PATH)
 
 
+def _repo_root() -> str:
+    return os.path.dirname(os.path.abspath(_DEFAULT_CONFIG_PATH))
+
+
+def resolve_seed_checkpoint_dir(static_cfg: Mapping[str, Any]) -> str | None:
+    """
+    Optional directory with ``model.zip``, ``vecnormalize.pkl``, ``trainer_state.json`` to start
+    every PBT trial from the same pretrained policy (weights + VecNormalize stats).
+
+    Resolution order:
+
+    1. ``RAY_PBT_SEED_CHECKPOINT`` — absolute path, or relative to repo root. Set to empty string
+       to disable and train from scratch even if ``pbt.seed_checkpoint_dir`` is set in JSON.
+    2. ``static_cfg["pbt"]["seed_checkpoint_dir"]`` — same path rules; omit or null to disable.
+    """
+    env_val = os.environ.get("RAY_PBT_SEED_CHECKPOINT")
+    if env_val is not None:
+        raw = env_val.strip()
+        if raw == "":
+            return None
+        resolved = _resolve_checkpoint_dir_path(raw)
+        if resolved is None:
+            warnings.warn(
+                f"RAY_PBT_SEED_CHECKPOINT is set but directory not found: {raw!r}. "
+                f"Tried repo root {_repo_root()!r} and cwd {os.getcwd()!r}. Training from scratch.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return resolved
+
+    pbt = static_cfg.get("pbt") or {}
+    raw = pbt.get("seed_checkpoint_dir")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    resolved = _resolve_checkpoint_dir_path(s)
+    if resolved is None:
+        warnings.warn(
+            f"pbt.seed_checkpoint_dir is set but not found: {s!r} "
+            f"(tried repo root {_repo_root()!r} and cwd {os.getcwd()!r}). "
+            "Training from scratch.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return resolved
+
+
+def _resolve_checkpoint_dir_path(raw: str) -> str | None:
+    p = os.path.expanduser(raw)
+    if os.path.isabs(p):
+        return p if os.path.isdir(p) else None
+    rel_repo = os.path.join(_repo_root(), p)
+    if os.path.isdir(rel_repo):
+        return rel_repo
+    rel_cwd = os.path.join(os.getcwd(), p)
+    if os.path.isdir(rel_cwd):
+        return rel_cwd
+    return None
+
+
 def _env_id_arg(config: Mapping[str, Any]) -> str | None:
     e = config.get("env_id")
     return e if isinstance(e, str) else None
@@ -511,6 +578,12 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     Uses ``ray.tune.get_checkpoint()`` to restore and ``ray.tune.report(..., checkpoint=...)`` to save
     (not ``ray.train`` — deprecated inside Tune function trainables, Ray 2.5+).
     Schedules are rebuilt from ``merged[\"base\"]`` each chunk (and on resume after PBT).
+
+    **Starting from an exported best checkpoint** (no Tune checkpoint yet): if
+    ``resolve_seed_checkpoint_dir`` finds ``pbt.seed_checkpoint_dir`` or ``RAY_PBT_SEED_CHECKPOINT``,
+    loads ``model.zip`` / ``vecnormalize.pkl`` from that folder while keeping hyperparameters from
+    ``merge_pbt_config(static, config)`` (current ``ray_pbt_config.json`` + Tune), not from the file's
+    embedded ``current_config``.
 
     Requires: ``pip install 'ray[tune]'``.
     """
@@ -525,6 +598,7 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
     static = get_default_pbt_config()
     checkpoint = tune.get_checkpoint()
     env_id = _env_id_arg(config)
+    seed_ckpt_dir = resolve_seed_checkpoint_dir(static)
 
     if checkpoint:
         with checkpoint.as_directory() as checkpoint_dir:
@@ -549,6 +623,35 @@ def train_lunarlander_pbt(config: dict[str, Any]) -> None:
                 merged["base"],
                 global_total_timesteps=int(merged["base"]["total_timesteps"]),
             )
+    elif seed_ckpt_dir:
+        # Fresh Tune trial: load policy + VecNormalize from disk, but hyperparameters and
+        # schedules come from ``merge_pbt_config(static, config)`` (current JSON + Tune), not from
+        # the checkpoint's saved ``current_config`` — so PBT starts from the same HP baseline.
+        merged = merge_pbt_config(static, config)
+        state_path = os.path.join(seed_ckpt_dir, CHECKPOINT_TRAINER_STATE)
+        with open(state_path, encoding="utf-8") as f:
+            prev_state = json.load(f)
+        trial_seed = int(config.get("seed", prev_state["seed"]))
+        model, train_env, _state = load_trial_checkpoint(
+            seed_ckpt_dir,
+            merged,
+            env_id=env_id,
+            override_seed=trial_seed,
+        )
+        timesteps_done = int(model.num_timesteps)
+        seed = trial_seed
+        best_raw = prev_state.get("best_eval_score_so_far")
+        best_eval = float(best_raw) if best_raw is not None else None
+        ent_cb = EntropyCoefGlobalScheduleCallback(
+            make_ent_coef_schedule_late_linear(),
+            global_total_timesteps=int(merged["base"]["total_timesteps"]),
+        )
+        apply_schedules_from_base(
+            model,
+            ent_cb,
+            merged["base"],
+            global_total_timesteps=int(merged["base"]["total_timesteps"]),
+        )
     else:
         merged = merge_pbt_config(static, config)
         seed = int(config.get("seed", 42))

@@ -1,4 +1,8 @@
-"""Shared Lunar Lander vector observation + PPO (MlpPolicy) setup for the notebook and Optuna script."""
+"""Shared Lunar Lander vector observation + PPO (MlpPolicy) setup for the notebook and Optuna script.
+
+Native Gymnasium reward (potential-based shaping, engine costs, terminal ±100) is unchanged here;
+see docs/lunar_lander_rewards.md for a full breakdown.
+"""
 
 from __future__ import annotations
 
