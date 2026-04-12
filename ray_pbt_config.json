@@ -1,7 +1,7 @@
 {
   "base": {
     "train_device": "cpu",
-    "n_envs": 28,
+    "n_envs": 26,
     "total_timesteps": 8000000,
     "n_steps": 1024,
     "batch_size": 512,

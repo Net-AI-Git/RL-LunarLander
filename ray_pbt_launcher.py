@@ -10,7 +10,7 @@ Environment (optional):
 - ``RAY_RESULTS_DIR`` — root for Tune storage (default: ``./ray_results`` under cwd).
 - ``RAY_PBT_EXPERIMENT_NAME`` — run name (default: ``lunarlander_pbt``).
 - ``RAY_PBT_CHECKPOINTS_TO_KEEP`` — max Tune checkpoints to retain per trial by score (default: 5).
-- ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** (default: ``28``, aligned with ``base.n_envs``). On a **28-core** machine one PBT trial typically uses the whole box at a time; trials queue when ``pbt.num_samples`` is larger. Override per machine with ``export RAY_PBT_CPUS=...``.
+- ``RAY_PBT_CPUS`` — logical CPUs reserved **per trial** for Ray (default: ``26``, must match ``base.n_envs``). **Ray cluster / autoscaler:** each worker must have at least this many CPUs per node, or scheduling fails with ``No available node types can fulfill resource request {'CPU': N}``. If workers are e.g. 8 vCPU, set ``RAY_PBT_CPUS=8`` and ``n_envs`` to ``8`` in ``ray_pbt_config.json``. Override when Ray reports fewer CPUs than hardware (e.g. ``export RAY_PBT_CPUS=26``). Trials queue when ``pbt.num_samples`` exceeds parallel capacity.
 - ``RAY_TUNE_VIZ_MIN_INTERVAL`` — minimum seconds between **live** visualization refreshes (default: ``5``). Each ``tune.report`` can trigger a refresh; many parallel trials reporting at once would otherwise rewrite every PNG constantly. Set to ``0`` to refresh on **every** result (heavier I/O). Plots: ``<experiment>/visualizations/trial_*_progress.png`` (eval vs ``timesteps_done``) and ``all_trials_comparison*.png``.
 
 If Ray fails to start with ``Timed out waiting for ... gcs_server_port`` (GCS): stop stale Ray
@@ -54,8 +54,8 @@ from ray_tune_visualization import (
     refresh_tune_visualizations,
 )
 
-# SubprocVecEnv: ~1 CPU per env; default matches ``base.n_envs`` in ``ray_pbt_config.json``.
-_DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "28"))
+# SubprocVecEnv: ~1 CPU per env; must match ``base.n_envs``. Override with RAY_PBT_CPUS for clusters.
+_DEFAULT_CPUS = int(os.environ.get("RAY_PBT_CPUS", "26"))
 
 _RESULTS_ROOT = os.environ.get("RAY_RESULTS_DIR")
 _DEFAULT_STORAGE = os.path.join(os.getcwd(), "ray_results")
